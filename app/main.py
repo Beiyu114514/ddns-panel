@@ -1,6 +1,8 @@
 import asyncio
+import datetime
 import hashlib
 import hmac
+import math
 import os
 import re
 import time
@@ -124,13 +126,111 @@ async def logout():
 
 # ---------- 总览 ----------
 
+CHART_COLORS = {"checks": "#3987e5", "changes": "#1baf7a", "fail": "#d03b3b"}
+CHART_W, CHART_H = 720, 240
+CHART_PAD_L, CHART_PAD_R, CHART_PAD_T, CHART_PAD_B = 38, 12, 12, 30
+
+
+def _nice_max(m: int) -> int:
+    for s in (4, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000):
+        if m <= s:
+            return s
+    return int(math.ceil(m / 10000.0)) * 10000
+
+
+def _hour_label(dt: datetime.datetime) -> str:
+    now = datetime.datetime.now()
+    hm = dt.strftime("%H:%M")
+    if dt.date() == now.date():
+        return f"今日 {hm}"
+    if dt.date() == (now - datetime.timedelta(days=1)).date():
+        return f"昨日 {hm}"
+    return dt.strftime("%m-%d ") + hm
+
+
+def _build_chart(hours: int = 24) -> dict:
+    h0 = datetime.datetime.now().replace(minute=0, second=0, microsecond=0) \
+        - datetime.timedelta(hours=hours - 1)
+    start = int(h0.timestamp())
+    b_checks, b_fail, b_changes = [0] * hours, [0] * hours, [0] * hours
+    for c in db.checks_since(start):
+        i = int((datetime.datetime.fromtimestamp(c["ts"]) - h0).total_seconds() // 3600)
+        if 0 <= i < hours:
+            b_checks[i] += 1
+            if c["status"] != "ok":
+                b_fail[i] += 1
+    for c in db.changes_ts_since(start):
+        i = int((datetime.datetime.fromtimestamp(c["ts"]) - h0).total_seconds() // 3600)
+        if 0 <= i < hours:
+            b_changes[i] += 1
+
+    plot_w = CHART_W - CHART_PAD_L - CHART_PAD_R
+    plot_h = CHART_H - CHART_PAD_T - CHART_PAD_B
+    xs = [CHART_PAD_L + i * plot_w / (hours - 1) for i in range(hours)]
+    ymax = _nice_max(max(max(b_checks), max(b_changes), max(b_fail)))
+
+    def _y(v):
+        return round(CHART_PAD_T + (1 - v / ymax) * plot_h, 1)
+
+    series = []
+    for vals, color, label in (
+        (b_checks, CHART_COLORS["checks"], "检查次数"),
+        (b_changes, CHART_COLORS["changes"], "IP 变动"),
+        (b_fail, CHART_COLORS["fail"], "失败"),
+    ):
+        ys = [_y(v) for v in vals]
+        series.append({
+            "label": label, "color": color, "vs": vals, "ys": ys,
+            "d": "M " + " L ".join(f"{xs[i]:.1f} {ys[i]:.1f}" for i in range(hours)),
+            "end_x": round(xs[-1], 1), "end_y": ys[-1],
+        })
+
+    yt = [{"v": v, "y": _y(v)} for v in (ymax, ymax // 2, 0)]
+    xt = [
+        {"x": xs[0], "anchor": "start", "label": _hour_label(h0)},
+        {"x": xs[hours // 2], "anchor": "middle",
+         "label": _hour_label(h0 + datetime.timedelta(hours=hours // 2))},
+        {"x": xs[-1], "anchor": "end",
+         "label": _hour_label(h0 + datetime.timedelta(hours=hours - 1))},
+    ]
+    colw = plot_w / (hours - 1)
+    hits, rows, titles = [], [], []
+    for i in range(hours):
+        bs = h0 + datetime.timedelta(hours=i)
+        title = f"{_hour_label(bs)} – {_hour_label(bs + datetime.timedelta(hours=1))}"
+        titles.append(title)
+        rows.append({"t": _hour_label(bs), "checks": b_checks[i],
+                     "fail": b_fail[i], "changes": b_changes[i]})
+        hx = max(0.0, xs[i] - colw / 2)
+        hits.append({"x": round(hx, 1), "w": round(min(colw, CHART_W - hx), 1), "label": title})
+
+    payload = {
+        "xs": [round(x, 1) for x in xs],
+        "hours": titles,
+        "series": [{"label": s["label"], "color": s["color"], "ys": s["ys"], "vs": s["vs"]}
+                   for s in series],
+    }
+    return {"w": CHART_W, "h": CHART_H, "pad_l": CHART_PAD_L, "pad_r": CHART_PAD_R,
+            "pad_t": CHART_PAD_T, "plot_h": plot_h, "yt": yt, "xt": xt,
+            "hits": hits, "series": series, "rows": rows, "payload": payload}
+
+
 @app.get("/")
 async def index(request: Request):
     now = int(time.time())
+    today_start = int(datetime.datetime.now().replace(
+        hour=0, minute=0, second=0, microsecond=0).timestamp())
     rows = []
+    abnormal = v4 = v6 = 0
     for d in db.list_domains():
         last = db.last_check(d["id"])
         last_ch = db.last_change_ts(d["id"])
+        if d["rrtype"] == "AAAA":
+            v6 += 1
+        else:
+            v4 += 1
+        if d["enabled"] and last and last["status"] != "ok":
+            abnormal += 1
         rows.append({
             "d": d,
             "last": last,
@@ -139,7 +239,26 @@ async def index(request: Request):
             "c7": db.change_count(d["id"], now - 7 * 86400),
             "c30": db.change_count(d["id"], now - 30 * 86400),
         })
-    return templates.TemplateResponse(request, "index.html", {"rows": rows})
+    totals = db.count_domains()
+    stats = db.check_stats_since(today_start)
+    total, ok = stats["total"] or 0, stats["ok"] or 0
+    changes_all = db.count_all_changes()
+    return templates.TemplateResponse(request, "index.html", {
+        "rows": rows,
+        "g": db.global_last_check(),
+        "any_enabled": totals["enabled"] > 0,
+        "today": {"total": total, "ok": ok, "fail": stats["fail"] or 0,
+                  "changes": db.changes_count_since(today_start),
+                  "rate": round(ok / total * 100) if total else 0},
+        "abnormal": abnormal,
+        "overview": {"total": totals["total"], "enabled": totals["enabled"],
+                     "disabled": totals["total"] - totals["enabled"],
+                     "v4": v4, "v6": v6, "changes_all": changes_all,
+                     "c7": db.changes_count_since(now - 7 * 86400),
+                     "c30": db.changes_count_since(now - 30 * 86400)},
+        "total_changes": changes_all,
+        "chart": _build_chart() if totals["total"] else None,
+    })
 
 
 # ---------- 域名管理 ----------

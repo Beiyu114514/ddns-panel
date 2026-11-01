@@ -96,3 +96,50 @@ code.ip.big{font-size:18px}
 
 .login-wrap{max-width:360px;margin:12vh auto 0}
 .login-wrap .card{padding:28px}
+
+/* ---------- 首页仪表盘 ---------- */
+.stat-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:16px 18px}
+.stat-grid.dense{grid-template-columns:repeat(4,1fr)}
+.stat{min-width:0}
+.stat .label{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat .value{font-size:26px;font-weight:600;line-height:1.25;margin-top:2px;word-break:break-all}
+.stat .value.ok{color:var(--ok)}
+.stat .value.bad{color:var(--bad)}
+.stat .value a{color:inherit}
+.stat .value a:hover{text-decoration:underline}
+.stat .sub{font-size:12px;color:var(--muted);margin-top:2px}
+.stat-grid.dense .stat .value{font-size:15px;font-weight:600;line-height:1.6}
+@media(max-width:900px){
+  .stat-grid{grid-template-columns:repeat(3,1fr)}
+  .stat-grid.dense{grid-template-columns:repeat(2,1fr)}
+}
+.card-head .sub{font-size:12px;color:var(--muted);margin-top:2px}
+.badge{display:inline-flex;align-items:center;gap:7px;font-size:12px;line-height:1;
+  padding:5px 12px;border-radius:99px;border:1px solid var(--border);color:var(--muted);white-space:nowrap}
+.badge.ok{color:var(--ok);border-color:rgba(63,185,80,.4);background:rgba(63,185,80,.1)}
+.badge .dot{margin:0}
+
+.chart-wrap{position:relative}
+.chart{width:100%;height:auto;display:block}
+.chart text{font-size:11px;fill:var(--muted)}
+.chart .grid{stroke:var(--border);stroke-width:1}
+.chart .base{stroke:#3a4356;stroke-width:1}
+.chart .hit{fill:transparent;outline:none}
+.chart .hit:focus-visible{fill:rgba(76,141,255,.08)}
+.chart .xhair{stroke:var(--muted);stroke-width:1;visibility:hidden}
+.chart .enddot,.chart .hdot{stroke:var(--panel);stroke-width:2}
+.chart-tip{display:none;position:absolute;top:6px;transform:translateX(-50%);
+  background:var(--panel2);border:1px solid var(--border);border-radius:8px;
+  padding:8px 12px;pointer-events:none;z-index:5;min-width:150px;
+  box-shadow:0 6px 20px rgba(0,0,0,.45)}
+.chart-tip .t{font-size:12px;color:var(--muted);margin-bottom:4px;white-space:nowrap}
+.chart-tip .row{display:flex;align-items:center;gap:8px;font-size:13px;margin-top:2px}
+.chart-tip .key{width:14px;height:2px;border-radius:1px;flex:none}
+.chart-tip .v{font-weight:600;min-width:18px}
+.chart-tip .n{color:var(--muted)}
+.lkey{display:inline-block;width:14px;height:2px;border-radius:1px;margin-right:6px;vertical-align:4px}
+.chart-table{margin-top:14px;font-size:13px}
+.chart-table summary{cursor:pointer;color:var(--muted)}
+.chart-table summary:hover{color:var(--text)}
+.chart-table table{margin-top:10px}
+.chart-table td{font-variant-numeric:tabular-nums}

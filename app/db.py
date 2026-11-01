@@ -171,6 +171,29 @@ def recent_checks(domain_id: int, limit: int = 20):
     ).fetchall()
 
 
+def global_last_check():
+    return conn().execute(
+        "SELECT c.*, d.name AS domain_name, d.rrtype, d.resolver FROM checks c "
+        "JOIN domains d ON d.id = c.domain_id ORDER BY c.ts DESC, c.id DESC LIMIT 1"
+    ).fetchone()
+
+
+def check_stats_since(since: int):
+    return conn().execute(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok, "
+        "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) AS fail "
+        "FROM checks WHERE ts >= ?",
+        (since,),
+    ).fetchone()
+
+
+def checks_since(since: int):
+    return conn().execute(
+        "SELECT ts, status FROM checks WHERE ts >= ?", (since,)
+    ).fetchall()
+
+
 def cleanup_checks(days: int):
     conn().execute("DELETE FROM checks WHERE ts < ?", (int(time.time()) - days * 86400,))
     conn().commit()
@@ -228,6 +251,31 @@ def changes_since(domain_id: int, since: int):
         "ORDER BY ts ASC, id ASC",
         (domain_id, since),
     ).fetchall()
+
+
+def changes_count_since(since: int) -> int:
+    return conn().execute(
+        "SELECT COUNT(*) AS n FROM changes WHERE ts >= ? AND old_ip IS NOT NULL", (since,)
+    ).fetchone()["n"]
+
+
+def changes_ts_since(since: int):
+    return conn().execute(
+        "SELECT ts FROM changes WHERE ts >= ? AND old_ip IS NOT NULL", (since,)
+    ).fetchall()
+
+
+def count_all_changes() -> int:
+    return conn().execute(
+        "SELECT COUNT(*) AS n FROM changes WHERE old_ip IS NOT NULL"
+    ).fetchone()["n"]
+
+
+def count_domains() -> dict:
+    row = conn().execute(
+        "SELECT COUNT(*) AS total, SUM(enabled) AS enabled FROM domains"
+    ).fetchone()
+    return {"total": row["total"] or 0, "enabled": row["enabled"] or 0}
 
 
 def last_change_before(domain_id: int, ts: int):
