@@ -126,7 +126,7 @@ async def logout():
 
 # ---------- 总览 ----------
 
-CHART_COLORS = {"checks": "#3987e5", "changes": "#1baf7a", "fail": "#d03b3b"}
+CHART_SERIES = (("checks", "检查次数"), ("changes", "IP 变动"), ("fail", "失败"))
 CHART_W, CHART_H = 720, 240
 CHART_PAD_L, CHART_PAD_R, CHART_PAD_T, CHART_PAD_B = 38, 12, 12, 30
 
@@ -173,14 +173,12 @@ def _build_chart(hours: int = 24) -> dict:
         return round(CHART_PAD_T + (1 - v / ymax) * plot_h, 1)
 
     series = []
-    for vals, color, label in (
-        (b_checks, CHART_COLORS["checks"], "检查次数"),
-        (b_changes, CHART_COLORS["changes"], "IP 变动"),
-        (b_fail, CHART_COLORS["fail"], "失败"),
-    ):
+    for vals, key, label in ((b_checks, "checks", "检查次数"),
+                             (b_changes, "changes", "IP 变动"),
+                             (b_fail, "fail", "失败")):
         ys = [_y(v) for v in vals]
         series.append({
-            "label": label, "color": color, "vs": vals, "ys": ys,
+            "key": key, "label": label, "vs": vals, "ys": ys,
             "d": "M " + " L ".join(f"{xs[i]:.1f} {ys[i]:.1f}" for i in range(hours)),
             "end_x": round(xs[-1], 1), "end_y": ys[-1],
         })
@@ -207,7 +205,7 @@ def _build_chart(hours: int = 24) -> dict:
     payload = {
         "xs": [round(x, 1) for x in xs],
         "hours": titles,
-        "series": [{"label": s["label"], "color": s["color"], "ys": s["ys"], "vs": s["vs"]}
+        "series": [{"key": s["key"], "label": s["label"], "ys": s["ys"], "vs": s["vs"]}
                    for s in series],
     }
     return {"w": CHART_W, "h": CHART_H, "pad_l": CHART_PAD_L, "pad_r": CHART_PAD_R,

@@ -2,7 +2,6 @@
 {% block content %}
 <div class="page-head">
   <h1>监控总览</h1>
-  <a class="btn" href="/domain/new">添加域名</a>
 </div>
 
 <div class="card">
@@ -75,17 +74,17 @@
       {% endfor %}
       <line class="xhair" x1="0" y1="{{ chart.pad_t }}" x2="0" y2="{{ chart.pad_t + chart.plot_h }}"/>
       {% for s in chart.series %}
-      <path d="{{ s.d }}" fill="none" stroke="{{ s.color }}" stroke-width="2"
+      <path class="s-{{ s.key }}" d="{{ s.d }}" fill="none" stroke-width="2"
             stroke-linejoin="round" stroke-linecap="round"/>
       {% endfor %}
       <g>
         {% for s in chart.series %}
-        <circle class="enddot" cx="{{ s.end_x }}" cy="{{ s.end_y }}" r="4" fill="{{ s.color }}"/>
+        <circle class="enddot s-{{ s.key }}" cx="{{ s.end_x }}" cy="{{ s.end_y }}" r="4"/>
         {% endfor %}
       </g>
       <g>
         {% for s in chart.series %}
-        <circle class="hdot" r="4.5" fill="{{ s.color }}" style="visibility:hidden"/>
+        <circle class="hdot s-{{ s.key }}" r="4.5" style="visibility:hidden"/>
         {% endfor %}
       </g>
       <g>
@@ -102,7 +101,7 @@
   </div>
   <ul class="legend">
     {% for s in chart.series %}
-    <li><span class="lkey" style="background:{{ s.color }}"></span>{{ s.label }}</li>
+    <li><span class="lkey s-{{ s.key }}"></span>{{ s.label }}</li>
     {% endfor %}
   </ul>
   <details class="chart-table">
@@ -146,8 +145,7 @@
         var row = document.createElement('div');
         row.className = 'row';
         var key = document.createElement('span');
-        key.className = 'key';
-        key.style.background = s.color;
+        key.className = 'key s-' + s.key;
         var v = document.createElement('span');
         v.className = 'v';
         v.textContent = s.vs[i];
