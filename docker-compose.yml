@@ -1,0 +1,13 @@
+services:
+  ddns-monitor:
+    build: .
+    container_name: ddns-monitor
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8300:8300"
+    environment:
+      TZ: Asia/Shanghai
+      # 如服务器在国内无法直连 Telegram API，取消注释并填入代理地址:
+      # - TG_PROXY=socks5://192.168.1.1:1080
+    volumes:
+      - ./data:/app/data

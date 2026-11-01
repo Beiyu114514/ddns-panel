@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="login-wrap">
+  <div class="card">
+    <h2>登录 DDNS 监控</h2>
+    <form method="post" action="/login" class="form">
+      <label>密码<input type="password" name="password" autofocus required></label>
+      <button class="btn wide">登录</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <h1>监控总览</h1>
+  <a class="btn" href="/domain/new">添加域名</a>
+</div>
+{% if not rows %}
+<div class="card"><div class="empty">还没有监控项，点击右上角「添加域名」开始。</div></div>
+{% else %}
+<div class="card"><div class="table-wrap"><table>
+<thead><tr>
+  <th>域名</th><th>当前解析</th><th>状态</th><th>最近检查</th>
+  <th>当前 IP 已稳定</th><th>7 天变动</th><th>30 天变动</th><th>操作</th>
+</tr></thead>
+<tbody>
+{% for r in rows %}
+<tr>
+  <td>
+    <a href="/domain/{{ r.d.id }}"><b>{{ r.d.name }}</b></a> <span class="tag">{{ r.d.rrtype }}</span>
+    {% if not r.d.enabled %}<span class="tag off">停用</span>{% endif %}
+    {% if r.d.note %}<div class="note">{{ r.d.note }}</div>{% endif %}
+  </td>
+  <td><code class="ip">{{ r.cur or "—" }}</code></td>
+  <td>{% if r.last and r.last.status == 'ok' %}<span class="dot ok"></span>正常
+      {% elif r.last %}<span class="dot bad"></span>{{ r.last.status }}
+      {% else %}<span class="dot"></span>待检查{% endif %}</td>
+  <td>{% if r.last %}{{ r.last.ts|fmt_ago }}{% else %}—{% endif %}</td>
+  <td>{{ r.stable }}</td>
+  <td>{{ r.c7 }}</td>
+  <td>{{ r.c30 }}</td>
+  <td class="actions">
+    <form method="post" action="/domain/{{ r.d.id }}/check" class="inline"><button class="btn sm">立即检查</button></form>
+    <a class="btn sm ghost" href="/domain/{{ r.d.id }}">详情</a>
+    <form method="post" action="/domain/{{ r.d.id }}/delete" class="inline"
+          onsubmit="return confirm('删除 {{ r.d.name }} 及其全部记录？')"><button class="btn sm danger">删除</button></form>
+  </td>
+</tr>
+{% endfor %}
+</tbody></table></div></div>
+{% endif %}
+{% endblock %}

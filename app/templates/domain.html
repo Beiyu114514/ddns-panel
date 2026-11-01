@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}{{ d.name }} - DDNS 监控{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ d.name }} <span class="tag">{{ d.rrtype }}</span>
+      {% if not d.enabled %}<span class="tag off">已停用</span>{% endif %}</h1>
+  <a class="btn ghost" href="/">返回总览</a>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>监控设置</h2>
+    <form method="post" action="/domain/{{ d.id }}/update" class="form">
+      <label>记录类型
+        <select name="rrtype">
+          <option value="A" {% if d.rrtype == 'A' %}selected{% endif %}>A (IPv4)</option>
+          <option value="AAAA" {% if d.rrtype == 'AAAA' %}selected{% endif %}>AAAA (IPv6)</option>
+        </select>
+      </label>
+      <label>DNS 服务器
+        <input name="resolver" value="{{ d.resolver }}" list="resolver-list" required>
+        <datalist id="resolver-list">
+          {% for r in resolvers %}<option value="{{ r }}">{% endfor %}
+        </datalist>
+      </label>
+      <label>检查间隔（秒，最小 60）
+        <input name="interval_sec" type="number" min="60" max="86400" value="{{ d.interval_sec }}" required>
+      </label>
+      <label>备注<input name="note" value="{{ d.note }}" maxlength="200"></label>
+      <label class="check"><input type="checkbox" name="enabled" {% if d.enabled %}checked{% endif %}> 启用监控</label>
+      <button class="btn">保存设置</button>
+      <p class="hint">修改记录类型会重置基线，下次解析视为首次记录，不发变动通知。</p>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>当前状态</h2>
+    <div class="kv"><span>当前解析</span><code class="ip big">{{ cur or "—" }}</code></div>
+    <div class="kv"><span>最近检查</span>
+      {% if last %}{{ last.ts|fmt_ts }}（{{ last.status }}{% if last.rtt_ms %}，{{ last.rtt_ms|round(0)|int }}ms{% endif %}）
+      {% else %}从未{% endif %}</div>
+    <div class="kv"><span>当前 IP 已稳定</span>{{ stable }}</div>
+    <div class="kv"><span>累计变动</span>{{ total_changes }} 次</div>
+    <form method="post" action="/domain/{{ d.id }}/check"><button class="btn">立即检查</button></form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <h2>IP 时间线</h2>
+    <div class="win-links">
+      {% for w in (7, 30, 90) %}
+      <a href="/domain/{{ d.id }}?days={{ w }}" {% if w == days %}class="on"{% endif %}>{{ w }} 天</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% if segs %}
+  <div class="track">
+    {% for s in segs %}
+    <div class="seg" style="left:{{ s.left }}%;width:{{ s.width }}%;background:{{ ip_color(s.ip) }}" title="{{ s.title }}"></div>
+    {% endfor %}
+  </div>
+  <ul class="legend">
+    {% for ip, dur in legend %}
+    <li><span class="swatch" style="background:{{ ip_color(ip) }}"></span>
+        <code class="ip">{{ ip }}</code>
+        <span class="muted">{{ dur|fmt_dur }}（约 {{ dur_pct[ip] }}%）</span></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="empty">该时间范围内没有解析记录。</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>变动记录</h2>
+  {% if changes %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>时间</th><th>旧 IP</th><th>新 IP</th></tr></thead>
+    <tbody>
+    {% for c in changes %}
+    <tr>
+      <td>{{ c.ts|fmt_ts }}</td>
+      <td><code class="ip">{{ c.old_ip or "首次记录" }}</code></td>
+      <td><code class="ip">{{ c.new_ip or "基线重置" }}</code></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="empty">暂无变动记录。</div>{% endif %}
+</div>
+
+<div class="card">
+  <h2>最近检查</h2>
+  <div class="table-wrap"><table class="small">
+    <thead><tr><th>时间</th><th>结果</th><th>解析值 / 错误</th><th>耗时</th></tr></thead>
+    <tbody>
+    {% for c in checks %}
+    <tr>
+      <td>{{ c.ts|fmt_ts }}</td>
+      <td>{% if c.status == 'ok' %}<span class="dot ok"></span>正常{% else %}<span class="dot bad"></span>{{ c.status }}{% endif %}</td>
+      <td><code class="ip">{{ c.ip or c.error or "—" }}</code></td>
+      <td>{% if c.rtt_ms %}{{ c.rtt_ms|round(0)|int }}ms{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</div>
+
+<div class="danger-zone">
+  <form method="post" action="/domain/{{ d.id }}/delete"
+        onsubmit="return confirm('删除 {{ d.name }} 及其全部记录？')">
+    <button class="btn danger">删除此监控项</button>
+  </form>
+</div>
+{% endblock %}

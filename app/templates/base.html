@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>{% block title %}DDNS 监控{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+{% if not hide_nav %}
+<nav>
+  <a class="brand" href="/">DDNS 监控</a>
+  <div class="links">
+    <a href="/" {% if request.url.path == '/' %}class="on"{% endif %}>总览</a>
+    <a href="/domain/new" {% if request.url.path == '/domain/new' %}class="on"{% endif %}>添加域名</a>
+    <a href="/settings" {% if request.url.path == '/settings' %}class="on"{% endif %}>设置</a>
+    <form method="post" action="/logout" class="inline"><button class="link">退出</button></form>
+  </div>
+</nav>
+{% endif %}
+{% if request.query_params.get('msg') %}<div class="flash ok">{{ request.query_params.get('msg') }}</div>{% endif %}
+{% if request.query_params.get('err') %}<div class="flash bad">{{ request.query_params.get('err') }}</div>{% endif %}
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

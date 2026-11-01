@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><h1>添加监控域名</h1></div>
+<div class="card">
+  <form method="post" action="/domain/new" class="form narrow">
+    <label>域名
+      <input name="name" placeholder="home.example.com" required>
+    </label>
+    <label>记录类型
+      <select name="rrtype">
+        <option value="A">A (IPv4)</option>
+        <option value="AAAA">AAAA (IPv6)</option>
+      </select>
+    </label>
+    <label>DNS 服务器（用于查询解析）
+      <input name="resolver" value="223.5.5.5" list="resolver-list" required>
+      <datalist id="resolver-list">
+        {% for r in resolvers %}<option value="{{ r }}">{% endfor %}
+      </datalist>
+    </label>
+    <label>检查间隔
+      <select name="interval_sec">
+        <option value="60">1 分钟</option>
+        <option value="300" selected>5 分钟</option>
+        <option value="600">10 分钟</option>
+        <option value="1800">30 分钟</option>
+        <option value="3600">1 小时</option>
+        <option value="7200">2 小时</option>
+        <option value="21600">6 小时</option>
+        <option value="86400">24 小时</option>
+      </select>
+    </label>
+    <label>备注（可选）<input name="note" maxlength="200" placeholder="如: 家里宽带 IPv4"></label>
+    <button class="btn wide">添加并立即检查</button>
+    <p class="hint">监控 AAAA 记录不需要本机具备 IPv6 网络，DNS 查询走现有网络即可。<br>
+    若域名开了 Cloudflare 橙云代理，解析到的是 CF 节点 IP，添加时会自动提示。</p>
+  </form>
+</div>
+{% endblock %}

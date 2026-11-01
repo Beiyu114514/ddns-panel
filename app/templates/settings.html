@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}设置 - DDNS 监控{% endblock %}
+{% block content %}
+<div class="page-head"><h1>设置</h1></div>
+
+<div class="card">
+  <h2>Telegram 通知</h2>
+  <form method="post" action="/settings/notify" class="form narrow">
+    <label class="check"><input type="checkbox" name="tg_enabled" {% if s.tg_enabled %}checked{% endif %}> 启用 Telegram 通知</label>
+    <label>Bot Token
+      <input name="tg_token" value="{{ s.tg_token }}" placeholder="123456789:AAF...">
+    </label>
+    <label>Chat ID
+      <input name="tg_chat" value="{{ s.tg_chat }}" placeholder="如 123456789 或群组 -100123456789">
+    </label>
+    <label class="check"><input type="checkbox" name="notify_on_change" {% if s.notify_on_change %}checked{% endif %}> IP 变动时通知</label>
+    <label class="check"><input type="checkbox" name="notify_on_fail" {% if s.notify_on_fail %}checked{% endif %}> 解析连续失败时通知</label>
+    <label>失败告警冷却（分钟，避免重复轰炸）
+      <input name="fail_cooldown_min" type="number" min="5" max="10080" value="{{ s.fail_cooldown_min }}">
+    </label>
+    <div class="btn-row">
+      <button class="btn">保存</button>
+      <button class="btn ghost" type="submit" formaction="/settings/test_tg">保存并发送测试消息</button>
+    </div>
+    <p class="hint">
+      获取方式：1) 在 Telegram 找 @BotFather 发送 /newbot 创建机器人，拿到 Token；
+      2) 先给你的机器人发一条任意消息；3) 浏览器打开
+      https://api.telegram.org/bot&lt;Token&gt;/getUpdates ，在返回的 JSON 里找 "chat":{"id":数字}。
+      群组 ID 为负数，频道为 -100 开头。<br>
+      若服务器在国内无法直连 api.telegram.org，请在 docker-compose.yml 中配置 TG_PROXY 代理。
+    </p>
+  </form>
+</div>
+
+<div class="card">
+  <h2>修改面板密码</h2>
+  <form method="post" action="/settings/password" class="form narrow">
+    <label>新密码（至少 6 位）<input type="password" name="password" required></label>
+    <label>确认新密码<input type="password" name="password2" required></label>
+    <button class="btn">修改密码</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>数据保留</h2>
+  <form method="post" action="/settings/data" class="form narrow">
+    <label>检查记录保留天数（变动记录永久保留）
+      <input name="retention_days" type="number" min="1" max="365" value="{{ s.retention_days }}">
+    </label>
+    <button class="btn">保存</button>
+  </form>
+</div>
+{% endblock %}
