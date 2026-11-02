@@ -18,12 +18,18 @@ CF_V6 = [
 def is_cloudflare(ip: str) -> bool:
     if not ip:
         return False
-    try:
-        addr = ipaddress.ip_address(ip.split(",")[0].strip())
-    except ValueError:
-        return False
-    nets = CF_V4 if addr.version == 4 else CF_V6
-    return any(addr in ipaddress.ip_network(n) for n in nets)
+    for part in ip.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            addr = ipaddress.ip_address(part)
+        except ValueError:
+            continue
+        nets = CF_V4 if addr.version == 4 else CF_V6
+        if any(addr in ipaddress.ip_network(n) for n in nets):
+            return True
+    return False
 
 
 def fmt_ts(ts) -> str:

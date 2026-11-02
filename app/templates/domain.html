@@ -7,6 +7,10 @@
   <a class="btn ghost" href="/">返回总览</a>
 </div>
 
+{% if cf_warn %}
+<div class="flash bad">当前解析结果疑似 Cloudflare 代理节点（橙云），监控到的是 CF IP 而非源站真实 IP；如需监控源站请将记录设为仅 DNS（灰云）。</div>
+{% endif %}
+
 <div class="grid2">
   <div class="card">
     <h2>监控设置</h2>

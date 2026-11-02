@@ -2,9 +2,12 @@ import asyncio
 import datetime
 import hashlib
 import hmac
+import ipaddress
 import math
 import os
 import re
+import secrets
+import sqlite3
 import time
 from contextlib import asynccontextmanager
 from urllib.parse import quote
@@ -30,8 +33,8 @@ async def _cleanup_loop():
         try:
             days = to_int(db.get_setting("retention_days", "30"), 30)
             db.cleanup_checks(days)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[cleanup] 检查记录清理失败: {e}", flush=True)
         await asyncio.sleep(6 * 3600)
 
 
@@ -71,11 +74,52 @@ def _cookie_ok(value: str) -> bool:
         return False
 
 
+def _trusted_nets() -> list:
+    # 默认只信任 Docker 桥接网段（容器内看到的宿主机反代来源）。回环不默认信任：
+    # 直连本机时不存在代理，采信其 XFF 只会让伪造头生效。
+    raw = os.environ.get("TRUSTED_PROXIES", "172.16.0.0/12")
+    nets = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            print(f"[auth] 忽略无效的 TRUSTED_PROXIES 项: {item}", flush=True)
+    return nets
+
+
+TRUSTED_PROXIES = _trusted_nets()
+
+
+def _is_trusted(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    # IPv4-mapped IPv6（双栈监听下对端常表现为 ::ffff:172.17.0.1）需要按 IPv4 判断，
+    # 否则 in 运算恒为 False，整段反代会被当成不可信来源
+    candidates = [addr]
+    if addr.version == 6 and addr.ipv4_mapped:
+        candidates.append(addr.ipv4_mapped)
+    return any(a in n for a in candidates for n in TRUSTED_PROXIES)
+
+
 def _client_ip(request: Request) -> str:
+    # 直连时用 TCP 对端；仅当对端是可信反代时才解析 XFF，并从右往左跳过可信跳，
+    # 取第一个不可信地址（最左侧条目由客户端伪造，不可作为限速 key）
+    peer = request.client.host if request.client else "?"
+    if not _is_trusted(peer):
+        return peer
     xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "?"
+    if not xff:
+        return peer
+    chain = [p.strip() for p in xff.split(",") if p.strip()]
+    for candidate in reversed(chain):
+        if not _is_trusted(candidate):
+            return candidate
+    return chain[0] if chain else peer
 
 
 @app.middleware("http")
@@ -87,7 +131,17 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-LOGIN_FAILS: dict[str, tuple[int, int]] = {}
+LOGIN_FAILS: dict[str, tuple[int, int, int]] = {}  # ip -> (fails, lock_until, last_seen)
+
+
+def _prune_login_fails(now: int):
+    if len(LOGIN_FAILS) <= 4096:
+        return
+    # 只清理"锁定已过期且一小时未活动"的条目；未锁定的计数条目 (lock=0) 必须保留，
+    # 否则批量散布错误密码就能把所有部分计数清零、绕过阈值
+    for k in [k for k, (_, lock, seen) in LOGIN_FAILS.items()
+              if lock <= now and now - seen > 3600]:
+        del LOGIN_FAILS[k]
 
 
 @app.get("/login")
@@ -102,18 +156,39 @@ async def login(request: Request):
     form = await request.form()
     pw = str(form.get("password", ""))
     ip = _client_ip(request)
-    fails, lock = LOGIN_FAILS.get(ip, (0, 0))
     now = int(time.time())
+    _prune_login_fails(now)
+    fails, lock, seen = LOGIN_FAILS.get(ip, (0, 0, 0))
     if lock > now:
         return RedirectResponse("/login?err=" + quote("尝试次数过多，请稍后再试"), 303)
-    if db.verify_password(pw, db.get_setting("password_hash", "")):
+    if lock:
+        fails = 0  # 锁定过期后重新计数，否则一次错误就永久再锁
+    # 占位计数必须在 await 之前完成，否则并发请求都读到旧值、各自写回 1，
+    # 5 次阈值永远触发不了。占位只累加计数，锁定由"确认失败"触发；本次密码
+    # 正确时占位被清除，因此不会把自己的正确登录挡在门外。
+    # 超额请求在验证前就拒绝，否则并发探测会把 5 次上限放大成 N 次密码校验。
+    pending = fails + 1
+    if pending > 5:
+        LOGIN_FAILS[ip] = (pending, now + 60, now)
+        return RedirectResponse("/login?err=" + quote("尝试次数过多，请稍后再试"), 303)
+    LOGIN_FAILS[ip] = (pending, 0, now)
+    # 快照在本请求内保持一致：hash 与 sign 用的 secret 都取自动作前的同一时刻，
+    # 否则登录与改密码重叠时会用新 secret 签出本应失效的旧密码会话
+    stored_hash = db.get_setting("password_hash", "")
+    ok = await asyncio.to_thread(db.verify_password, pw, stored_hash)
+    if ok and stored_hash == db.get_setting("password_hash", ""):
         LOGIN_FAILS.pop(ip, None)
         exp = now + 30 * 86400
         resp = RedirectResponse("/", 303)
         resp.set_cookie(COOKIE, f"{exp}.{_sign(exp)}", max_age=30 * 86400,
                         httponly=True, samesite="lax")
         return resp
-    LOGIN_FAILS[ip] = (fails + 1, now + 60 if fails + 1 >= 5 else 0)
+    if ok:
+        # 校验通过但密码已在验证期间被改掉：不签 cookie，也不计入失败次数
+        LOGIN_FAILS.pop(ip, None)
+        return RedirectResponse("/login?err=" + quote("密码已变更，请用新密码登录"), 303)
+    if pending >= 5:
+        LOGIN_FAILS[ip] = (pending, now + 60, now)
     return RedirectResponse("/login?err=" + quote("密码错误"), 303)
 
 
@@ -222,7 +297,6 @@ async def index(request: Request):
     abnormal = v4 = v6 = 0
     for d in db.list_domains():
         last = db.last_check(d["id"])
-        last_ch = db.last_change_ts(d["id"])
         if d["rrtype"] == "AAAA":
             v6 += 1
         else:
@@ -233,7 +307,7 @@ async def index(request: Request):
             "d": d,
             "last": last,
             "cur": db.current_ip(d["id"]),
-            "stable": fmt_dur(now - (last_ch or d["created_at"])),
+            "stable": fmt_dur(now - (db.last_activity_ts(d["id"]) or d["created_at"])),
             "c7": db.change_count(d["id"], now - 7 * 86400),
             "c30": db.change_count(d["id"], now - 30 * 86400),
         })
@@ -303,7 +377,10 @@ async def domain_create(request: Request):
         return RedirectResponse("/domain/new?err=" + quote("域名格式不正确"), 303)
     if db.get_domain_by_name(name, rrtype):
         return RedirectResponse("/domain/new?err=" + quote(f"{name} ({rrtype}) 已存在"), 303)
-    did = db.create_domain(name, rrtype, resolver, interval, note)
+    try:
+        did = db.create_domain(name, rrtype, resolver, interval, note)
+    except sqlite3.IntegrityError:
+        return RedirectResponse("/domain/new?err=" + quote(f"{name} ({rrtype}) 已存在"), 303)
     monitor.poke()
     res = await monitor.run_check(did)
     if res["status"] == "ok":
@@ -328,11 +405,18 @@ async def domain_detail(request: Request, domain_id: int, days: int = 30):
     total = max(1, now - start)
 
     segs_raw = []
-    before = db.last_change_before(domain_id, start)
-    if before:
-        segs_raw.append([start, None, before["new_ip"]])
-    for c in db.changes_since(domain_id, start):
-        segs_raw.append([c["ts"], None, c["new_ip"]])
+    # 基线重置后旧历史作废：以 marker 的 (ts,id) 作复合边界，重置后只取更晚的记录，
+    # 同一秒内先于 marker 的旧记录不会被误当作重置后的基线
+    marker = db.last_reset(domain_id)
+    if marker and marker["ts"] >= start:
+        for c in db.changes_after(domain_id, marker["ts"], marker["id"]):
+            segs_raw.append([c["ts"], None, c["new_ip"]])
+    else:
+        before = db.last_change_before(domain_id, start)
+        if before and before["new_ip"] is not None:
+            segs_raw.append([start, None, before["new_ip"]])
+        for c in db.changes_since(domain_id, start):
+            segs_raw.append([c["ts"], None, c["new_ip"]])
     for i, s in enumerate(segs_raw):
         s[1] = segs_raw[i + 1][0] if i + 1 < len(segs_raw) else now
 
@@ -352,13 +436,14 @@ async def domain_detail(request: Request, domain_id: int, days: int = 30):
     legend_items = sorted(legend.items(), key=lambda kv: -kv[1])
     dur_pct = {ip: round(dur / total * 100) for ip, dur in legend.items()}
 
-    last_ch = db.last_change_ts(domain_id)
+    cur = db.current_ip(domain_id)
     return templates.TemplateResponse(request, "domain.html", {
         "d": d,
         "resolvers": RESOLVERS,
-        "cur": db.current_ip(domain_id),
+        "cur": cur,
+        "cf_warn": is_cloudflare(cur),
         "last": db.last_check(domain_id),
-        "stable": fmt_dur(now - (last_ch or d["created_at"])),
+        "stable": fmt_dur(now - (db.last_activity_ts(domain_id) or d["created_at"])),
         "total_changes": db.count_changes(domain_id),
         "days": days,
         "segs": segs,
@@ -382,10 +467,18 @@ async def domain_update(request: Request, domain_id: int):
     interval = max(60, min(86400, to_int(form.get("interval_sec"), d["interval_sec"])))
     note = str(form.get("note", "")).strip()[:200]
     enabled = 1 if form.get("enabled") else 0
-    db.update_domain(domain_id, rrtype=rrtype, resolver=resolver,
-                     interval_sec=interval, note=note, enabled=enabled)
-    if rrtype != d["rrtype"]:
-        db.reset_baseline(domain_id)
+    if rrtype != d["rrtype"] and db.get_domain_by_name(d["name"], rrtype):
+        return RedirectResponse(f"/domain/{domain_id}?err="
+                                + quote(f"{d['name']} ({rrtype}) 已存在，无法切换"),
+                                303)
+    try:
+        db.update_domain(domain_id, reset_marker=(rrtype != d["rrtype"]),
+                         rrtype=rrtype, resolver=resolver,
+                         interval_sec=interval, note=note, enabled=enabled)
+    except sqlite3.IntegrityError:
+        return RedirectResponse(f"/domain/{domain_id}?err="
+                                + quote(f"{d['name']} ({rrtype}) 已存在，无法切换"),
+                                303)
     monitor.poke()
     return RedirectResponse(f"/domain/{domain_id}?msg=" + quote("设置已保存"), 303)
 
@@ -419,6 +512,7 @@ def _settings_ctx() -> dict:
         "notify_on_change": db.get_setting("notify_on_change", "1") == "1",
         "notify_on_fail": db.get_setting("notify_on_fail", "1") == "1",
         "fail_cooldown_min": to_int(db.get_setting("fail_cooldown_min", "60"), 60),
+        "change_cooldown_min": to_int(db.get_setting("change_cooldown_min", "0"), 0),
         "retention_days": to_int(db.get_setting("retention_days", "30"), 30),
     }
 
@@ -436,18 +530,30 @@ async def settings_password(request: Request):
         return RedirectResponse("/settings?err=" + quote("密码至少 6 位"), 303)
     if p1 != p2:
         return RedirectResponse("/settings?err=" + quote("两次输入的密码不一致"), 303)
-    db.set_setting("password_hash", db.hash_password(p1))
-    return RedirectResponse("/settings?msg=" + quote("密码已修改"), 303)
+    db.set_settings({
+        "password_hash": await asyncio.to_thread(db.hash_password, p1),
+        # 与 hash 同一事务轮换，确保不会出现"密码已改但旧 cookie 仍有效"的中间态
+        "auth_secret": secrets.token_hex(32),
+    })
+    try:
+        os.remove(os.path.join(db.DATA_DIR, "initial_password.txt"))
+    except OSError:
+        pass
+    return RedirectResponse("/login?msg=" + quote("密码已修改，请用新密码重新登录"), 303)
 
 
 def _save_notify(form):
-    db.set_setting("tg_enabled", "1" if form.get("tg_enabled") else "0")
-    db.set_setting("notify_on_change", "1" if form.get("notify_on_change") else "0")
-    db.set_setting("notify_on_fail", "1" if form.get("notify_on_fail") else "0")
-    db.set_setting("tg_token", str(form.get("tg_token", "")).strip())
-    db.set_setting("tg_chat", str(form.get("tg_chat", "")).strip())
     cd = max(5, min(10080, to_int(form.get("fail_cooldown_min"), 60)))
-    db.set_setting("fail_cooldown_min", str(cd))
+    ccd = max(0, min(1440, to_int(form.get("change_cooldown_min"), 0)))
+    db.set_settings({
+        "tg_enabled": "1" if form.get("tg_enabled") else "0",
+        "notify_on_change": "1" if form.get("notify_on_change") else "0",
+        "notify_on_fail": "1" if form.get("notify_on_fail") else "0",
+        "tg_token": str(form.get("tg_token", "")).strip(),
+        "tg_chat": str(form.get("tg_chat", "")).strip(),
+        "fail_cooldown_min": cd,
+        "change_cooldown_min": ccd,
+    })
 
 
 @app.post("/settings/notify")

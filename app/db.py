@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS changes (
   new_ip    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_changes_dom_ts ON changes (domain_id, ts);
+CREATE INDEX IF NOT EXISTS idx_changes_reset ON changes (domain_id, ts DESC, id DESC)
+  WHERE old_ip IS NULL AND new_ip IS NULL;
 """
 
 
@@ -81,12 +83,23 @@ def get_setting(key: str, default=None):
 
 
 def set_setting(key: str, value):
-    conn().execute(
-        "INSERT INTO settings (key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (key, str(value)),
-    )
-    conn().commit()
+    set_settings({key: value})
+
+
+def set_settings(items: dict):
+    # 单事务写多条，避免"改了一半"的中间态（如改密码时 hash 已更新而 secret 未轮换）
+    c = conn()
+    try:
+        c.executemany(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [(k, str(v)) for k, v in items.items()],
+        )
+        c.commit()
+    except Exception:
+        # 不 rollback 的话，失败的半截写入会被后续无关的 commit 顺带提交
+        c.rollback()
+        raise
 
 
 def hash_password(pw: str) -> str:
@@ -133,10 +146,22 @@ def create_domain(name: str, rrtype: str, resolver: str, interval_sec: int, note
     return cur.lastrowid
 
 
-def update_domain(domain_id: int, **kw):
-    fields = ", ".join(f"{k} = ?" for k in kw)
-    conn().execute(f"UPDATE domains SET {fields} WHERE id = ?", (*kw.values(), domain_id))
-    conn().commit()
+def update_domain(domain_id: int, reset_marker: bool = False, **kw):
+    # 记录类型变更与基线 marker 必须同一事务，否则崩溃会在两者之间留下
+    # "已换类型但未重置基线"，下一次检查会把旧类型的 IP 当成基线记成变动
+    c = conn()
+    try:
+        fields = ", ".join(f"{k} = ?" for k in kw)
+        c.execute(f"UPDATE domains SET {fields} WHERE id = ?", (*kw.values(), domain_id))
+        if reset_marker:
+            c.execute(
+                "INSERT INTO changes (domain_id, ts, old_ip, new_ip) VALUES (?, ?, NULL, NULL)",
+                (domain_id, int(time.time())),
+            )
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
 
 
 def delete_domain(domain_id: int):
@@ -213,10 +238,27 @@ def reset_baseline(domain_id: int):
     add_change(domain_id, None, None)
 
 
-def current_ip(domain_id: int):
-    row = conn().execute(
-        "SELECT new_ip FROM changes WHERE domain_id = ? AND new_ip IS NOT NULL "
+def last_reset(domain_id: int):
+    return conn().execute(
+        "SELECT * FROM changes WHERE domain_id = ? AND old_ip IS NULL AND new_ip IS NULL "
         "ORDER BY ts DESC, id DESC LIMIT 1",
+        (domain_id,),
+    ).fetchone()
+
+
+def last_activity_ts(domain_id: int):
+    # 含 marker 行：基线重置后"已稳定"应从重置时刻重新起算，而不是回落到域名创建时间
+    row = conn().execute(
+        "SELECT MAX(ts) AS ts FROM changes WHERE domain_id = ?", (domain_id,)
+    ).fetchone()
+    return row["ts"] if row and row["ts"] is not None else None
+
+
+def current_ip(domain_id: int):
+    # 基线重置的 marker 行 (NULL, NULL) 也必须参与"取最新一行"，否则重置前的旧 IP
+    # 会被继续当作当前基线；marker 行 new_ip 为 NULL 即表示"无基线"
+    row = conn().execute(
+        "SELECT new_ip FROM changes WHERE domain_id = ? ORDER BY ts DESC, id DESC LIMIT 1",
         (domain_id,),
     ).fetchone()
     return row["new_ip"] if row else None
@@ -224,11 +266,10 @@ def current_ip(domain_id: int):
 
 def last_change_ts(domain_id: int):
     row = conn().execute(
-        "SELECT ts FROM changes WHERE domain_id = ? AND new_ip IS NOT NULL "
-        "ORDER BY ts DESC, id DESC LIMIT 1",
+        "SELECT ts, new_ip FROM changes WHERE domain_id = ? ORDER BY ts DESC, id DESC LIMIT 1",
         (domain_id,),
     ).fetchone()
-    return row["ts"] if row else None
+    return row["ts"] if row and row["new_ip"] is not None else None
 
 
 def change_count(domain_id: int, since: int) -> int:
@@ -279,14 +320,25 @@ def count_domains() -> dict:
 
 
 def last_change_before(domain_id: int, ts: int):
+    # 不过滤 NULL：若 marker 行是 ts 前最新一行，调用方据此判定"无基线"
     return conn().execute(
-        "SELECT * FROM changes WHERE domain_id = ? AND ts < ? AND new_ip IS NOT NULL "
+        "SELECT * FROM changes WHERE domain_id = ? AND ts < ? "
         "ORDER BY ts DESC, id DESC LIMIT 1",
         (domain_id, ts),
     ).fetchone()
 
 
+def changes_after(domain_id: int, ts: int, after_id: int):
+    # (ts, id) 复合边界：同一秒内的重置前记录不会被误当作重置后的记录
+    return conn().execute(
+        "SELECT * FROM changes WHERE domain_id = ? AND (ts > ? OR (ts = ? AND id > ?)) "
+        "AND new_ip IS NOT NULL ORDER BY ts ASC, id ASC",
+        (domain_id, ts, ts, after_id),
+    ).fetchall()
+
+
 def changes_list(domain_id: int, limit: int = 200):
+    # 保留 marker 行，让"基线重置"在变动记录中可审计
     return conn().execute(
         "SELECT * FROM changes WHERE domain_id = ? ORDER BY ts DESC, id DESC LIMIT ?",
         (domain_id, limit),

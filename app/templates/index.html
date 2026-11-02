@@ -158,10 +158,10 @@
       var rect = svg.getBoundingClientRect();
       var scale = rect.width / W;
       var px = data.xs[i] * scale;
+      tip.style.display = 'block';  /* 先显示才能量到真实宽度，display:none 时 offsetWidth 恒为 0 */
       var half = tip.offsetWidth / 2 + 8;
       px = Math.max(half, Math.min(px, rect.width - half));
       tip.style.left = px + 'px';
-      tip.style.display = 'block';
     }
     function hide() {
       xhair.style.visibility = 'hidden';

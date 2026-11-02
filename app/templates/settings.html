@@ -18,6 +18,9 @@
     <label>失败告警冷却（分钟，避免重复轰炸）
       <input name="fail_cooldown_min" type="number" min="5" max="10080" value="{{ s.fail_cooldown_min }}">
     </label>
+    <label>IP 变动通知最小间隔（分钟，0 表示每次都通知）
+      <input name="change_cooldown_min" type="number" min="0" max="1440" value="{{ s.change_cooldown_min }}">
+    </label>
     <div class="btn-row">
       <button class="btn">保存</button>
       <button class="btn ghost" type="submit" formaction="/settings/test_tg">保存并发送测试消息</button>
