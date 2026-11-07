@@ -13,7 +13,10 @@ services:
       # 用 ${VAR-default} 而非 ${VAR:-default}：空值才是"关闭 XFF 信任"的方式，
       # :- 会把空值当成未设置、仍然套用默认值
       TRUSTED_PROXIES: "${TRUSTED_PROXIES-172.16.0.0/12}"
+      # X-Forwarded-For 中由可信代理追加的层数，默认 1（单层反代）。
+      # 经 CDN + 反代两层时设为 2，否则限速会把代理 IP 当成客户端。
+      TRUSTED_PROXY_HOPS: "${TRUSTED_PROXY_HOPS-1}"
       # 如服务器在国内无法直连 Telegram API，取消注释并填入代理地址:
-      # - TG_PROXY=socks5://192.168.1.1:1080
+      # TG_PROXY: "socks5://192.168.1.1:1080"
     volumes:
       - ./data:/app/data

@@ -106,9 +106,18 @@ def _is_trusted(ip: str) -> bool:
     return any(a in n for a in candidates for n in TRUSTED_PROXIES)
 
 
+def _proxy_hops() -> int:
+    return max(1, to_int(os.environ.get("TRUSTED_PROXY_HOPS", "1"), 1))
+
+
+TRUSTED_PROXY_HOPS = _proxy_hops()
+
+
 def _client_ip(request: Request) -> str:
-    # 直连时用 TCP 对端；仅当对端是可信反代时才解析 XFF，并从右往左跳过可信跳，
-    # 取第一个不可信地址（最左侧条目由客户端伪造，不可作为限速 key）
+    # 直连时用 TCP 对端；仅当对端是可信反代时才解析 XFF。
+    # 右侧 TRUSTED_PROXY_HOPS 个条目是可信代理逐跳追加的，其左侧第一个才是客户端。
+    # 不能"从右往左跳过所有可信地址"：客户端本身在可信网段时会被跳过，
+    # 从而采信它伪造的最左侧条目，限速 key 可被随意轮换。
     peer = request.client.host if request.client else "?"
     if not _is_trusted(peer):
         return peer
@@ -116,10 +125,11 @@ def _client_ip(request: Request) -> str:
     if not xff:
         return peer
     chain = [p.strip() for p in xff.split(",") if p.strip()]
-    for candidate in reversed(chain):
-        if not _is_trusted(candidate):
-            return candidate
-    return chain[0] if chain else peer
+    idx = len(chain) - TRUSTED_PROXY_HOPS
+    if idx < 0:
+        # XFF 比声明的代理层数还短，头不完整，退回对端地址
+        return peer
+    return chain[idx]
 
 
 @app.middleware("http")
@@ -132,16 +142,22 @@ async def auth_middleware(request: Request, call_next):
 
 
 LOGIN_FAILS: dict[str, tuple[int, int, int]] = {}  # ip -> (fails, lock_until, last_seen)
+LOGIN_FAILS_MAX = 8192
 
 
 def _prune_login_fails(now: int):
-    if len(LOGIN_FAILS) <= 4096:
+    if len(LOGIN_FAILS) <= LOGIN_FAILS_MAX:
         return
-    # 只清理"锁定已过期且一小时未活动"的条目；未锁定的计数条目 (lock=0) 必须保留，
-    # 否则批量散布错误密码就能把所有部分计数清零、绕过阈值
+    # 只清理"锁定已过期且一小时未活动"的条目；未锁定的计数条目 (lock=0) 不按时间
+    # 清理，否则批量散布错误密码就能把所有部分计数清零、绕过阈值
     for k in [k for k, (_, lock, seen) in LOGIN_FAILS.items()
-              if lock <= now and now - seen > 3600]:
+              if lock and lock <= now and now - seen > 3600]:
         del LOGIN_FAILS[k]
+    # 仍超限时按最后活动时间淘汰最旧条目，保证大量来源 IP 不会让字典无界增长
+    excess = len(LOGIN_FAILS) - LOGIN_FAILS_MAX
+    if excess > 0:
+        for k in sorted(LOGIN_FAILS, key=lambda k: LOGIN_FAILS[k][2])[:excess]:
+            del LOGIN_FAILS[k]
 
 
 @app.get("/login")
@@ -381,8 +397,12 @@ async def domain_create(request: Request):
         did = db.create_domain(name, rrtype, resolver, interval, note)
     except sqlite3.IntegrityError:
         return RedirectResponse("/domain/new?err=" + quote(f"{name} ({rrtype}) 已存在"), 303)
-    monitor.poke()
-    res = await monitor.run_check(did)
+    # 先同步检查落基线，再唤醒调度器；worker 会跳过刚完成的检查，
+    # 避免同一域名连续解析两次、多 IP 记录被记成假变动
+    try:
+        res = await monitor.run_check(did)
+    finally:
+        monitor.poke()
     if res["status"] == "ok":
         msg = f"添加成功，首次解析: {res['ip']} ({res['rtt']:.0f}ms)"
         if is_cloudflare(res["ip"]):
@@ -456,10 +476,12 @@ async def domain_detail(request: Request, domain_id: int, days: int = 30):
 
 @app.post("/domain/{domain_id}/update")
 async def domain_update(request: Request, domain_id: int):
+    form = await request.form()
+    # 必须在 await 之后再读：表单解析期间另一个请求可能已改过记录类型，
+    # 用旧值决定是否重置基线会把新类型的基线写坏
     d = db.get_domain(domain_id)
     if not d:
         return RedirectResponse("/", 303)
-    form = await request.form()
     rrtype = str(form.get("rrtype", d["rrtype"]))
     if rrtype not in ("A", "AAAA"):
         rrtype = d["rrtype"]
@@ -492,8 +514,12 @@ async def domain_delete(domain_id: int):
 
 @app.post("/domain/{domain_id}/check")
 async def domain_check(domain_id: int):
-    if not db.get_domain(domain_id):
+    d = db.get_domain(domain_id)
+    if not d:
         return RedirectResponse("/", 303)
+    if not d["enabled"]:
+        return RedirectResponse(f"/domain/{domain_id}?err="
+                                + quote("监控项已停用，无法手动检查"), 303)
     res = await monitor.run_check(domain_id)
     if res["status"] == "ok":
         msg = f"解析成功: {res['ip']} ({res['rtt']:.0f}ms)"

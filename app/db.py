@@ -69,11 +69,13 @@ def init():
         set_setting("auth_secret", secrets.token_hex(32))
     if not get_setting("password_hash"):
         pw = secrets.token_urlsafe(6)
-        set_setting("password_hash", hash_password(pw))
         path = os.path.join(DATA_DIR, "initial_password.txt")
+        # 先落盘再提交 hash：文件写失败时不能留下"有 hash 但没有密码文件"的状态，
+        # 否则重启后不会再生成初始密码，管理员将永久无法登录
         with open(path, "w") as f:
             f.write(pw + "\n")
         os.chmod(path, 0o600)
+        set_setting("password_hash", hash_password(pw))
         print(f"[setup] 初始密码: {pw} （已写入 {path}，登录后请修改）", flush=True)
 
 
