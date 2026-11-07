@@ -72,9 +72,10 @@ def init():
         path = os.path.join(DATA_DIR, "initial_password.txt")
         # 先落盘再提交 hash：文件写失败时不能留下"有 hash 但没有密码文件"的状态，
         # 否则重启后不会再生成初始密码，管理员将永久无法登录
-        with open(path, "w") as f:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             f.write(pw + "\n")
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o600)  # 已存在文件也要收紧权限
         set_setting("password_hash", hash_password(pw))
         print(f"[setup] 初始密码: {pw} （已写入 {path}，登录后请修改）", flush=True)
 

@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import hashlib
+import heapq
 import hmac
 import ipaddress
 import math
@@ -153,10 +154,15 @@ def _prune_login_fails(now: int):
     for k in [k for k, (_, lock, seen) in LOGIN_FAILS.items()
               if lock and lock <= now and now - seen > 3600]:
         del LOGIN_FAILS[k]
-    # 仍超限时按最后活动时间淘汰最旧条目，保证大量来源 IP 不会让字典无界增长
+    # 仍超限时按最后活动时间淘汰最旧条目，保证大量来源 IP 不会让字典无界增长。
+    # 一次多淘汰一些，避免持续攻击下每次登录都做一次全量排序
     excess = len(LOGIN_FAILS) - LOGIN_FAILS_MAX
     if excess > 0:
-        for k in sorted(LOGIN_FAILS, key=lambda k: LOGIN_FAILS[k][2])[:excess]:
+        drop = max(excess, LOGIN_FAILS_MAX // 8)
+        # 优先淘汰未锁定条目，尽量保住仍在生效的锁定
+        for k in heapq.nsmallest(
+                drop, LOGIN_FAILS,
+                key=lambda k: (LOGIN_FAILS[k][1] > now, LOGIN_FAILS[k][2])):
             del LOGIN_FAILS[k]
 
 

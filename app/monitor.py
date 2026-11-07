@@ -68,7 +68,7 @@ class Monitor:
             t.cancel()
         if self.sender:
             self.sender.cancel()
-        # 未发出的通知必须回滚状态，否则重启后这些告警会被当作已通知
+        # 未发出的通知回滚状态，避免停止过程中状态与事实不一致
         while not self.send_q.empty():
             _, _, rollback = self.send_q.get_nowait()
             rollback()
@@ -173,7 +173,7 @@ class Monitor:
             try:
                 ok = await self._send(text, kind=kind)
             except asyncio.CancelledError:
-                # 进程退出时消息未发出，恢复状态以免重启后误以为已通知
+                # 发送被取消时消息未发出，回滚状态等下次检查重试
                 rollback()
                 raise
             except Exception as e:
@@ -201,21 +201,34 @@ class Monitor:
             if prev != res["ip"]:
                 db.add_change(d["id"], prev, res["ip"])
                 print(f"[change] {d['name']}: {prev} -> {res['ip']}", flush=True)
-                if prev is not None and self._deliverable("change") and \
-                        now - st.get("last_change_notify", 0) >= \
-                        self._tg_conf()["change_cooldown_min"] * 60:
-                    prev_lcn = st.get("last_change_notify", 0)
-                    st["last_change_notify"] = now
+                if prev is not None:
+                    if self._deliverable("change"):
+                        # 未送达的变动留待下次检查重试；新变动覆盖旧的中转记录
+                        st["pending_change"] = (prev, res["ip"], now)
+                    else:
+                        st.pop("pending_change", None)
+            pend = st.get("pending_change")
+            if pend and self._deliverable("change") and \
+                    now - st.get("last_change_notify", 0) >= \
+                    self._tg_conf()["change_cooldown_min"] * 60:
+                p_old, p_new, p_ts = pend
+                prev_lcn = st.get("last_change_notify", 0)
+                st["last_change_notify"] = now
+                st.pop("pending_change", None)
+                st["change_seq"] = st.get("change_seq", 0) + 1
+                seq = st["change_seq"]
 
-                    def rollback_change():
-                        # 只在状态仍属于本条消息时回滚，避免覆盖后续检查的新状态
-                        if st.get("last_change_notify") == now:
-                            st["last_change_notify"] = prev_lcn
+                def rollback_change():
+                    # 只在状态仍属于本条消息时回滚，避免覆盖后续检查的新状态
+                    if st.get("change_seq") == seq:
+                        st["last_change_notify"] = prev_lcn
+                        if st.get("pending_change") is None:
+                            st["pending_change"] = pend
 
-                    pending.append((
-                        f"DDNS 解析变动\n域名: {d['name']} ({d['rrtype']})\n"
-                        f"时间: {fmt_short(now)}\n旧 IP: {prev}\n新 IP: {res['ip']}",
-                        "change", rollback_change))
+                pending.append((
+                    f"DDNS 解析变动\n域名: {d['name']} ({d['rrtype']})\n"
+                    f"时间: {fmt_short(p_ts)}\n旧 IP: {p_old}\n新 IP: {p_new}",
+                    "change", rollback_change))
             if st["alerted"] and self._deliverable("recover"):
                 # 通知关闭时不能清 alerted：否则恢复事件被吞掉，重新开启后无法补发
                 st["alerted"] = False
