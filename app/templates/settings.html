@@ -1,56 +1,119 @@
 {% extends "base.html" %}
-{% block title %}设置 - DDNS 监控{% endblock %}
+{% block title %}设置 · DDNS 监控{% endblock %}
+
 {% block content %}
-<div class="page-head"><h1>设置</h1></div>
+<div class="page-head">
+  <div>
+    <h1>设置</h1>
+    <p class="muted">通知、安全与数据保留。所有修改立即生效。</p>
+  </div>
+</div>
 
-<div class="card">
-  <h2>Telegram 通知</h2>
-  <form method="post" action="/settings/notify" class="form narrow">
-    <label class="check"><input type="checkbox" name="tg_enabled" {% if s.tg_enabled %}checked{% endif %}> 启用 Telegram 通知</label>
-    <label>Bot Token
-      <input name="tg_token" value="{{ s.tg_token }}" placeholder="123456789:AAF...">
+<section class="card" aria-labelledby="notify-h">
+  <h2 id="notify-h">Telegram 通知</h2>
+  {% if error_form == 'notify' and errors %}
+  <div class="alert error" role="alert">
+    <strong>通知设置未保存：</strong>
+    <ul>{% for field, message in errors.items() %}<li>{{ message }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  <form id="notify-form" method="post" action="/settings/notify" class="form" data-pending="保存中…">
+    <label class="check-row" for="tg_enabled">
+      <input type="checkbox" id="tg_enabled" name="tg_enabled" {% if s.tg_enabled %}checked{% endif %}>
+      <span>启用 Telegram 通知</span>
     </label>
-    <label>Chat ID
-      <input name="tg_chat" value="{{ s.tg_chat }}" placeholder="如 123456789 或群组 -100123456789">
-    </label>
-    <label class="check"><input type="checkbox" name="notify_on_change" {% if s.notify_on_change %}checked{% endif %}> IP 变动时通知</label>
-    <label class="check"><input type="checkbox" name="notify_on_fail" {% if s.notify_on_fail %}checked{% endif %}> 解析连续失败时通知</label>
-    <label>失败告警冷却（分钟，避免重复轰炸）
-      <input name="fail_cooldown_min" type="number" min="5" max="10080" value="{{ s.fail_cooldown_min }}">
-    </label>
-    <label>IP 变动通知最小间隔（分钟，0 表示每次都通知）
-      <input name="change_cooldown_min" type="number" min="0" max="1440" value="{{ s.change_cooldown_min }}">
-    </label>
-    <div class="btn-row">
-      <button class="btn">保存</button>
-      <button class="btn ghost" type="submit" formaction="/settings/test_tg">保存并发送测试消息</button>
-    </div>
-    <p class="hint">
-      获取方式：1) 在 Telegram 找 @BotFather 发送 /newbot 创建机器人，拿到 Token；
-      2) 先给你的机器人发一条任意消息；3) 浏览器打开
-      https://api.telegram.org/bot&lt;Token&gt;/getUpdates ，在返回的 JSON 里找 "chat":{"id":数字}。
-      群组 ID 为负数，频道为 -100 开头。<br>
-      若服务器在国内无法直连 api.telegram.org，请在 docker-compose.yml 中配置 TG_PROXY 代理。
+
+    <label for="tg_token">Bot Token</label>
+    <input id="tg_token" name="tg_token" type="password" value=""
+           autocomplete="off" spellcheck="false"
+           placeholder="{{ '已配置，留空保持不变' if s.tg_token_set else '123456789:AA...' }}"
+           aria-describedby="tg-token-hint">
+    <p id="tg-token-hint" class="hint">
+      {% if s.tg_token_set %}已保存 Token（出于安全考虑不回显）。只在需要更换时填写。{% else %}在 @BotFather 创建机器人后获得。{% endif %}
     </p>
-  </form>
-</div>
 
-<div class="card">
-  <h2>修改面板密码</h2>
-  <form method="post" action="/settings/password" class="form narrow">
-    <label>新密码（至少 6 位）<input type="password" name="password" required></label>
-    <label>确认新密码<input type="password" name="password2" required></label>
-    <button class="btn">修改密码</button>
-  </form>
-</div>
+    <label for="tg_chat">Chat ID</label>
+    <input id="tg_chat" name="tg_chat" value="{{ s.tg_chat }}" inputmode="numeric"
+           autocomplete="off" placeholder="如 123456789">
+    <p class="hint">私聊可先给机器人发一条消息，再用 @userinfobot 查 ID；群组 ID 通常以 -100 开头。</p>
 
-<div class="card">
-  <h2>数据保留</h2>
-  <form method="post" action="/settings/data" class="form narrow">
-    <label>检查记录保留天数（变动记录永久保留）
-      <input name="retention_days" type="number" min="1" max="365" value="{{ s.retention_days }}">
-    </label>
-    <button class="btn">保存</button>
+    <fieldset class="fieldset">
+      <legend>提醒场景</legend>
+      <label class="check-row" for="notify_on_change">
+        <input type="checkbox" id="notify_on_change" name="notify_on_change" {% if s.notify_on_change %}checked{% endif %}>
+        <span>IP 发生变动时提醒</span>
+      </label>
+      <label class="check-row" for="notify_on_fail">
+        <input type="checkbox" id="notify_on_fail" name="notify_on_fail" {% if s.notify_on_fail %}checked{% endif %}>
+        <span>解析持续失败时提醒</span>
+      </label>
+    </fieldset>
+
+    <div class="field-grid">
+      <div>
+        <label for="fail_cooldown_min">失败提醒冷却（分钟）</label>
+        <input id="fail_cooldown_min" name="fail_cooldown_min" type="number" min="5" max="10080"
+               value="{{ s.fail_cooldown_min }}" inputmode="numeric"
+               {% if errors.get('fail_cooldown_min') %}aria-invalid="true" aria-describedby="fail-cd-error"{% endif %}>
+        {% if errors.get('fail_cooldown_min') %}<p class="field-error" id="fail-cd-error">{{ errors.fail_cooldown_min }}</p>{% endif %}
+        <p class="hint">5–10080 分钟，避免持续故障时刷屏。</p>
+      </div>
+      <div>
+        <label for="change_cooldown_min">变动提醒冷却（分钟）</label>
+        <input id="change_cooldown_min" name="change_cooldown_min" type="number" min="0" max="1440"
+               value="{{ s.change_cooldown_min }}" inputmode="numeric"
+               {% if errors.get('change_cooldown_min') %}aria-invalid="true" aria-describedby="change-cd-error"{% endif %}>
+        {% if errors.get('change_cooldown_min') %}<p class="field-error" id="change-cd-error">{{ errors.change_cooldown_min }}</p>{% endif %}
+        <p class="hint">0–1440 分钟；0 表示每次变动都提醒。</p>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn primary" type="submit">保存通知设置</button>
+      <button class="btn" type="submit" formaction="/settings/test_tg" data-pending="发送中…">发送测试消息</button>
+    </div>
+    <p class="hint">“发送测试消息”会先保存当前表单，再发送一条测试消息。</p>
   </form>
-</div>
+</section>
+
+<section class="card" aria-labelledby="password-h">
+  <h2 id="password-h">登录密码</h2>
+  {% if error_form == 'password' and errors %}
+  <div class="alert error" role="alert">
+    <strong>密码未修改：</strong>
+    <ul>{% for field, message in errors.items() %}<li>{{ message }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  <form method="post" action="/settings/password" class="form narrow" data-pending="修改中…">
+    <label for="password">新密码</label>
+    <input id="password" name="password" type="password" minlength="6" required
+           autocomplete="new-password"
+           {% if errors.get('password') %}aria-invalid="true" aria-describedby="password-error password-hint"{% else %}aria-describedby="password-hint"{% endif %}>
+    {% if errors.get('password') %}<p class="field-error" id="password-error">{{ errors.password }}</p>{% endif %}
+    <p id="password-hint" class="hint">至少 6 位。修改后所有设备都需要重新登录。</p>
+
+    <label for="password2">再次输入</label>
+    <input id="password2" name="password2" type="password" minlength="6" required
+           autocomplete="new-password"
+           {% if errors.get('password2') %}aria-invalid="true" aria-describedby="password2-error"{% endif %}>
+    {% if errors.get('password2') %}<p class="field-error" id="password2-error">{{ errors.password2 }}</p>{% endif %}
+    <button class="btn primary" type="submit">修改密码</button>
+  </form>
+</section>
+
+<section class="card" aria-labelledby="data-h">
+  <h2 id="data-h">数据保留</h2>
+  {% if error_form == 'data' and errors %}
+  <div class="alert error" role="alert"><strong>未保存：</strong>{{ errors.retention_days }}</div>
+  {% endif %}
+  <form method="post" action="/settings/data" class="form narrow" data-pending="保存中…">
+    <label for="retention_days">检查记录保留天数</label>
+    <input id="retention_days" name="retention_days" type="number" min="1" max="365"
+           value="{{ s.retention_days }}" required inputmode="numeric"
+           {% if errors.get('retention_days') %}aria-invalid="true" aria-describedby="retention-error retention-hint"{% else %}aria-describedby="retention-hint"{% endif %}>
+    {% if errors.get('retention_days') %}<p class="field-error" id="retention-error">{{ errors.retention_days }}</p>{% endif %}
+    <p id="retention-hint" class="hint">1–365 天。只清理检查记录，IP 变动记录会保留。</p>
+    <button class="btn primary" type="submit">保存数据保留设置</button>
+  </form>
+</section>
 {% endblock %}

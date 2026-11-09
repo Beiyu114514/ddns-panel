@@ -1,12 +1,21 @@
 {% extends "base.html" %}
+{% block title %}登录 · DDNS 监控{% endblock %}
 {% block content %}
 <div class="login-wrap">
-  <div class="card">
-    <h2>登录 DDNS 监控</h2>
-    <form method="post" action="/login" class="form">
-      <label>密码<input type="password" name="password" autofocus required></label>
-      <button class="btn wide">登录</button>
+  <div class="card login-card">
+    <h1>登录 DDNS 监控</h1>
+    <p class="muted login-host">当前节点：<strong>{{ request.url.hostname }}</strong></p>
+    {% if error %}<div class="flash bad" id="login-error" role="alert">{{ error }}</div>{% endif %}
+    <form method="post" action="/login" class="form" data-pending="登录中…">
+      <label for="password">密码</label>
+      <input id="password" type="password" name="password" required
+             autocomplete="current-password" autocapitalize="off"
+             autocorrect="off" spellcheck="false"
+             {% if error %}aria-invalid="true" aria-describedby="login-error"{% endif %}>
+      <button class="btn primary wide" type="submit">登录</button>
     </form>
+    <p class="hint">首次部署的初始密码保存在服务器 <code>data/initial_password.txt</code>；
+      修改密码后该文件会被删除。</p>
   </div>
 </div>
 {% endblock %}

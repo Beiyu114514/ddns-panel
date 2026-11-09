@@ -1,137 +1,275 @@
 {% extends "base.html" %}
-{% block title %}{{ d.name }} - DDNS 监控{% endblock %}
+{% block title %}{{ d.name }} · DDNS 监控{% endblock %}
+
 {% block content %}
+{% set state = 'disabled' if not d.enabled else ('pending' if not last else ('ok' if last.status == 'ok' else 'bad')) %}
+
+<nav class="breadcrumb" aria-label="面包屑">
+  <a href="/">总览</a><span aria-hidden="true">/</span><span>{{ d.name }}</span>
+</nav>
+
 <div class="page-head">
-  <h1>{{ d.name }} <span class="tag">{{ d.rrtype }}</span>
-      {% if not d.enabled %}<span class="tag off">已停用</span>{% endif %}</h1>
-  <a class="btn ghost" href="/">返回总览</a>
-</div>
-
-{% if cf_warn %}
-<div class="flash bad">当前解析结果疑似 Cloudflare 代理节点（橙云），监控到的是 CF IP 而非源站真实 IP；如需监控源站请将记录设为仅 DNS（灰云）。</div>
-{% endif %}
-
-<div class="grid2">
-  <div class="card">
-    <h2>监控设置</h2>
-    <form method="post" action="/domain/{{ d.id }}/update" class="form">
-      <label>记录类型
-        <select name="rrtype">
-          <option value="A" {% if d.rrtype == 'A' %}selected{% endif %}>A (IPv4)</option>
-          <option value="AAAA" {% if d.rrtype == 'AAAA' %}selected{% endif %}>AAAA (IPv6)</option>
-        </select>
-      </label>
-      <label>DNS 服务器
-        <input name="resolver" value="{{ d.resolver }}" list="resolver-list" required>
-        <datalist id="resolver-list">
-          {% for r in resolvers %}<option value="{{ r }}">{% endfor %}
-        </datalist>
-      </label>
-      <label>检查间隔（秒，最小 60）
-        <input name="interval_sec" type="number" min="60" max="86400" value="{{ d.interval_sec }}" required>
-      </label>
-      <label>备注<input name="note" value="{{ d.note }}" maxlength="200"></label>
-      <label class="check"><input type="checkbox" name="enabled" {% if d.enabled %}checked{% endif %}> 启用监控</label>
-      <button class="btn">保存设置</button>
-      <p class="hint">修改记录类型会重置基线，下次解析视为首次记录，不发变动通知。</p>
-    </form>
-  </div>
-
-  <div class="card">
-    <h2>当前状态</h2>
-    <div class="kv"><span>当前解析</span><code class="ip big">{{ cur or "—" }}</code></div>
-    <div class="kv"><span>最近检查</span>
-      {% if last %}{{ last.ts|fmt_ts }}（{{ last.status }}{% if last.rtt_ms %}，{{ last.rtt_ms|round(0)|int }}ms{% endif %}）
-      {% else %}从未{% endif %}</div>
-    <div class="kv"><span>当前 IP 已稳定</span>{{ stable }}</div>
-    <div class="kv"><span>累计变动</span>{{ total_changes }} 次</div>
-    <form method="post" action="/domain/{{ d.id }}/check"><button class="btn">立即检查</button></form>
-  </div>
-</div>
-
-<div class="card">
-  <div class="card-head">
-    <h2>IP 时间线</h2>
-    <div class="win-links">
-      {% for w in (7, 30, 90) %}
-      <a href="/domain/{{ d.id }}?days={{ w }}" {% if w == days %}class="on"{% endif %}>{{ w }} 天</a>
-      {% endfor %}
+  <div class="title-wrap">
+    <h1 class="domain-title">{{ d.name }}</h1>
+    <div class="badge-row">
+      <span class="badge type">{{ d.rrtype }}</span>
+      {% if d.enabled %}<span class="badge ok">监控中</span>{% else %}<span class="badge muted">已停用</span>{% endif %}
+      {% if cf_warn %}<span class="badge warn">Cloudflare 代理</span>{% endif %}
     </div>
   </div>
-  {% if agg_label %}
-  <p class="hint">该窗口内共 {{ window_count }} 次变动，已按 {{ agg_label }}聚合显示；精确时间见下方变动记录。</p>
+  <div class="row-actions">
+    <form method="post" action="/domain/{{ d.id }}/check" class="inline" data-pending="检查中…">
+      <button class="btn primary" type="submit" {% if not d.enabled %}disabled title="监控项已停用"{% endif %}>立即检查</button>
+    </form>
+    <a class="btn" href="#settings">设置</a>
+  </div>
+</div>
+
+<section class="card status-card" aria-labelledby="status-h">
+  <h2 id="status-h" class="sr-only">当前状态</h2>
+  <dl class="kv">
+    <div>
+      <dt>当前解析</dt>
+      <dd class="mono strong">{{ cur|fmt_empty }}</dd>
+    </div>
+    <div>
+      <dt>最近检查</dt>
+      <dd>
+        {% if last %}
+          <span class="badge {{ 'ok' if last.status == 'ok' else 'bad' }}">{{ last.status|status_label }}</span>
+          <span class="muted">{{ last.ts|fmt_ago }}</span>
+        {% else %}
+          <span class="badge pending">待检查</span><span class="muted">从未</span>
+        {% endif %}
+      </dd>
+    </div>
+    <div>
+      <dt>响应时间</dt>
+      <dd class="num">{{ last.rtt_ms|fmt_rtt if last else '—' }}</dd>
+    </div>
+    <div>
+      <dt>当前 IP 稳定时长</dt>
+      <dd>{{ stable }}</dd>
+    </div>
+    <div>
+      <dt>累计 IP 变动</dt>
+      <dd class="num">{{ total_changes }}</dd>
+    </div>
+    <div>
+      <dt>记录与重置</dt>
+      <dd class="small">首次记录 {{ stats.first_records }} 条{% if stats.markers %} · 基线重置 {{ stats.markers }} 次{% endif %}</dd>
+    </div>
+  </dl>
+  {% if last and last.error %}<p class="field-error">{{ last.error }}</p>{% endif %}
+  {% if cf_warn %}
+  <p class="callout warn">当前解析结果属于 Cloudflare 代理网段。监控到的是 CF 节点 IP，
+    不是源站真实 IP；若要监控源站，请在 Cloudflare 把记录改为“仅 DNS”（灰云）。</p>
   {% endif %}
-  {% if segs %}
-  <div class="track">
-    {% for s in segs %}
-    <div class="seg" style="left:{{ s.left }}%;width:{{ s.width }}%;background:{{ ip_color(s.ip) }}" title="{{ s.title }}"></div>
+</section>
+
+<section class="card" aria-labelledby="timeline-h">
+  <div class="card-head">
+    <div>
+      <h2 id="timeline-h">IP 时间线</h2>
+      <p class="muted">色块表示该时间段使用的 IP；下方图例按完整记录统计时长，不受采样影响。</p>
+      <p class="hint">该窗口内 {{ tl.counts.window_changes }} 次 IP 变动{% if tl.counts.markers %}，含 {{ tl.counts.markers }} 次基线重置{% endif %}。</p>
+    </div>
+    <nav class="segmented" aria-label="时间范围">
+      {% for opt, label in [(7, '7 天'), (30, '30 天'), (90, '90 天')] %}
+      <a href="?days={{ opt }}" {% if days == opt %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+  </div>
+
+  {% if tl.sampled %}
+  <p class="hint">变动过密，色块已按 {{ tl.bucket_label }} 聚合（最多约 240 段）；图例时长仍按完整记录统计。</p>
+  {% endif %}
+
+  <p id="tl-tip" class="chart-tip" aria-live="polite">聚焦时间线后按 ← → 逐段查看 IP 与时长。</p>
+  <div class="tl-ticks" aria-hidden="true">
+    {% for t in tl.ticks %}
+    <span class="tl-tick anchor-{{ t.anchor }}" style="left: {{ t.left }}%" title="{{ t.full }}">{{ t.label }}</span>
     {% endfor %}
   </div>
-  <ul class="legend">
-    {% for item in legend %}
-    <li><span class="swatch{% if item.other %} other{% endif %}"{% if not item.other %} style="background:{{ ip_color(item.label) }}"{% endif %}></span>
-        <code class="ip">{{ item.label }}</code>
-        <span class="muted">{{ item.dur|fmt_dur }}（约 {{ item.pct }}%）</span></li>
+  <div class="tl-track" id="tl-track" tabindex="0" role="group"
+       aria-label="IP 时间线，使用左右方向键逐段查看" aria-describedby="tl-tip">
+    {% for s in tl.segments %}
+    <span class="tl-seg ip-{{ s.color }}" style="left: {{ s.left }}%; width: {{ s.width }}%"
+          title="{{ s.title }}" data-label="{{ s.label }}" aria-hidden="true"></span>
+    {% endfor %}
+    {% if tl.marker_left is not none %}
+    <span class="tl-marker" style="left: {{ tl.marker_left }}%" title="基线重置"></span>
+    {% endif %}
+  </div>
+  <p class="tl-range muted">{{ tl.start|fmt_ts }} → {{ tl.end|fmt_ts }}</p>
+
+  {% if tl.empty %}
+  <p class="empty">所选时间内还没有记录。</p>
+  {% else %}
+  <ul class="tl-legend" aria-label="IP 时长图例">
+    {% for l in tl.legend %}
+    <li>
+      <span class="sw {% if not l.other %}ip-{{ l.color }}{% else %}neutral{% endif %}" aria-hidden="true"></span>
+      <span class="tl-ip mono">{{ l.ip }}</span>
+      <span class="tl-dur num">{{ l.dur|fmt_dur }}</span>
+      <span class="tl-pct muted">{{ l.pct }}%</span>
+    </li>
     {% endfor %}
   </ul>
-  {% else %}
-  <div class="empty">该时间范围内没有解析记录。</div>
+  <details class="tl-details">
+    <summary>时间线明细（{{ tl.segments|length }} 段）</summary>
+    <p class="hint">这里列出当前窗口的采样段；完整 IP 变动见下方「变动记录」，保留全量历史。</p>
+    <ol>
+      {% for s in tl.segments %}
+      <li><span class="mono">{{ s.t0 }} – {{ s.t1 }}</span> · {{ s.ip }} · {{ s.dur }}</li>
+      {% endfor %}
+    </ol>
+  </details>
   {% endif %}
-</div>
+</section>
 
-<div class="card" id="changes">
+<section class="card" id="changes" aria-labelledby="changes-h">
   <div class="card-head">
-    <h2>变动记录</h2>
-    <span class="muted">共 {{ changes_total }} 条</span>
+    <div>
+      <h2 id="changes-h">变动记录</h2>
+      <p class="muted">共 {{ stats.rows }} 行：IP 变动 {{ stats.changes }} 次、首次记录 {{ stats.first_records }} 条{% if stats.markers %}、基线重置 {{ stats.markers }} 次{% endif %}。全量历史，不受时间窗限制。</p>
+    </div>
   </div>
   {% if changes %}
-  <div class="table-wrap"><table>
-    <thead><tr><th>时间</th><th>旧 IP</th><th>新 IP</th></tr></thead>
-    <tbody>
-    {% for c in changes %}
-    <tr>
-      <td>{{ c.ts|fmt_ts }}</td>
-      <td><code class="ip">{{ c.old_ip or "首次记录" }}</code></td>
-      <td><code class="ip">{{ c.new_ip or "基线重置" }}</code></td>
-    </tr>
-    {% endfor %}
-    </tbody>
-  </table></div>
-  {% else %}<div class="empty">暂无变动记录。</div>{% endif %}
-  {% if pages > 1 %}
-  <div class="pager">
-    {% if page > 1 %}
-    <a class="btn ghost sm" href="/domain/{{ d.id }}?days={{ days }}&page={{ page - 1 }}#changes">上一页</a>
-    {% endif %}
-    <span class="muted">第 {{ page }} / {{ pages }} 页</span>
-    {% if page < pages %}
-    <a class="btn ghost sm" href="/domain/{{ d.id }}?days={{ days }}&page={{ page + 1 }}#changes">下一页</a>
-    {% endif %}
+  <div class="table-wrap">
+    <table class="data-table">
+      <caption class="sr-only">IP 变动记录，按时间倒序</caption>
+      <thead><tr><th scope="col">时间</th><th scope="col">旧 IP</th><th scope="col">新 IP</th><th scope="col">说明</th></tr></thead>
+      <tbody>
+        {% for c in changes %}
+        <tr>
+          <th scope="row" class="nowrap">{{ c.ts|fmt_ts }}</th>
+          <td class="mono">{{ c.old_ip|fmt_empty }}</td>
+          <td class="mono">{{ c.new_ip|fmt_empty }}</td>
+          <td>
+            {% if c.old_ip is none and c.new_ip is none %}<span class="badge muted">基线重置</span>
+            {% elif c.old_ip is none %}<span class="badge ok">首次记录</span>
+            {% else %}<span class="badge type">IP 变动</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
+  <nav class="pager" aria-label="变动记录分页">
+    {% if has_newer %}<a class="btn" href="?days={{ days }}&amp;after={{ prev_after }}">← 较新</a>
+    {% else %}<span class="btn disabled" aria-disabled="true">← 较新</span>{% endif %}
+    <span class="muted">本页 {{ changes|length }} 行 · 全量历史</span>
+    {% if has_older %}<a class="btn" href="?days={{ days }}&amp;before={{ next_before }}">较旧 →</a>
+    {% else %}<span class="btn disabled" aria-disabled="true">较旧 →</span>{% endif %}
+  </nav>
+  {% else %}
+  <p class="empty">还没有变动记录。首次解析成功后会写入一条“首次记录”。</p>
   {% endif %}
-</div>
+</section>
 
-<div class="card">
-  <h2>最近检查</h2>
-  <div class="table-wrap"><table class="small">
-    <thead><tr><th>时间</th><th>结果</th><th>解析值 / 错误</th><th>耗时</th></tr></thead>
-    <tbody>
-    {% for c in checks %}
-    <tr>
-      <td>{{ c.ts|fmt_ts }}</td>
-      <td>{% if c.status == 'ok' %}<span class="dot ok"></span>正常{% else %}<span class="dot bad"></span>{{ c.status }}{% endif %}</td>
-      <td><code class="ip">{{ c.ip or c.error or "—" }}</code></td>
-      <td>{% if c.rtt_ms %}{{ c.rtt_ms|round(0)|int }}ms{% else %}—{% endif %}</td>
-    </tr>
-    {% endfor %}
-    </tbody>
-  </table></div>
-</div>
+<section class="card" aria-labelledby="checks-h">
+  <div class="card-head">
+    <div>
+      <h2 id="checks-h">最近检查</h2>
+      <p class="muted">只显示最近 20 条。</p>
+    </div>
+  </div>
+  {% if checks %}
+  <div class="table-wrap">
+    <table class="data-table">
+      <caption class="sr-only">最近 20 条检查记录</caption>
+      <thead><tr><th scope="col">时间</th><th scope="col">状态</th><th scope="col" class="num">耗时</th><th scope="col">错误</th></tr></thead>
+      <tbody>
+        {% for c in checks %}
+        <tr>
+          <th scope="row" class="nowrap">{{ c.ts|fmt_ts }}</th>
+          <td><span class="badge {{ 'ok' if c.status == 'ok' else 'bad' }}">{{ c.status|status_label }}</span></td>
+          <td class="num">{{ c.rtt_ms|fmt_rtt }}</td>
+          <td class="small">{{ c.error|fmt_empty }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有检查记录。</p>
+  {% endif %}
+</section>
 
-<div class="danger-zone">
-  <form method="post" action="/domain/{{ d.id }}/delete"
-        onsubmit="return confirm('删除 {{ d.name }} 及其全部记录？')">
-    <button class="btn danger">删除此监控项</button>
+<section class="card" id="settings" aria-labelledby="settings-h">
+  <h2 id="settings-h">监控设置</h2>
+  <form method="post" action="/domain/{{ d.id }}/update" class="form narrow" data-pending="保存中…">
+    <label for="rrtype">记录类型</label>
+    <select id="rrtype" name="rrtype">
+      <option value="A" {% if d.rrtype == 'A' %}selected{% endif %}>A（IPv4）</option>
+      <option value="AAAA" {% if d.rrtype == 'AAAA' %}selected{% endif %}>AAAA（IPv6）</option>
+    </select>
+    <p class="hint">修改记录类型会重置基线，并把切换后的第一次解析记为新的首次记录。</p>
+
+    <label for="resolver">DNS 服务器</label>
+    <input id="resolver" name="resolver" value="{{ d.resolver }}" list="resolver-list"
+           required inputmode="decimal" autocomplete="off" spellcheck="false">
+    <datalist id="resolver-list">
+      {% for r in resolvers %}<option value="{{ r }}"></option>{% endfor %}
+    </datalist>
+
+    <label for="interval_sec">检查间隔</label>
+    <select id="interval_sec" name="interval_sec">
+      {% for sec, label in INTERVAL_OPTIONS %}
+      <option value="{{ sec }}" {% if d.interval_sec == sec %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="note">备注（可选）</label>
+    <input id="note" name="note" value="{{ d.note or '' }}" maxlength="200" placeholder="如：家里宽带 IPv4">
+
+    <label class="check-row" for="enabled">
+      <input type="checkbox" id="enabled" name="enabled" {% if d.enabled %}checked{% endif %}>
+      <span>启用定时监控</span>
+    </label>
+
+    <button class="btn primary" type="submit">保存监控设置</button>
   </form>
-</div>
+</section>
+
+<section class="card danger-zone" aria-labelledby="danger-h">
+  <h2 id="danger-h">危险操作</h2>
+  <p>删除后会永久移除该监控项、{{ stats.rows }} 条变动记录与全部检查记录，无法恢复。</p>
+  <details>
+    <summary>删除监控项…</summary>
+    <form method="post" action="/domain/{{ d.id }}/delete" class="form" data-pending="删除中…">
+      <p>确认删除 <strong>{{ d.name }}</strong>？此操作不可撤销。</p>
+      <button class="btn danger-solid" type="submit">确认删除</button>
+    </form>
+  </details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var track = document.getElementById('tl-track');
+  if (!track) return;
+  var segments = Array.prototype.slice.call(track.querySelectorAll('.tl-seg'));
+  var tip = document.getElementById('tl-tip');
+  if (!segments.length || !tip) return;
+  var idx = 0;
+  function show(i) {
+    idx = (i + segments.length) % segments.length;
+    segments.forEach(function (s) { s.classList.remove('is-active'); });
+    segments[idx].classList.add('is-active');
+    tip.textContent = segments[idx].getAttribute('data-label');
+  }
+  track.addEventListener('focus', function () { show(idx); });
+  track.addEventListener('keydown', function (e) {
+    var next = null;
+    if (e.key === 'ArrowLeft') next = idx - 1;
+    else if (e.key === 'ArrowRight') next = idx + 1;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = segments.length - 1;
+    if (next !== null) { e.preventDefault(); show(next); }
+  });
+})();
+</script>
 {% endblock %}

@@ -7,7 +7,8 @@ import stat
 import time
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE, "data")
+# 允许测试与演示种子使用独立数据目录，避免污染真实数据
+DATA_DIR = os.environ.get("DDNS_DATA_DIR") or os.path.join(BASE, "data")
 DB_PATH = os.path.join(DATA_DIR, "ddns.db")
 
 _conn = None
@@ -49,6 +50,12 @@ CREATE TABLE IF NOT EXISTS changes (
 CREATE INDEX IF NOT EXISTS idx_changes_dom_ts ON changes (domain_id, ts);
 CREATE INDEX IF NOT EXISTS idx_changes_reset ON changes (domain_id, ts DESC, id DESC)
   WHERE old_ip IS NULL AND new_ip IS NULL;
+-- keyset 分页与时间线扫描：按 (domain_id, ts DESC, id DESC) 直接走索引，
+-- 不再为 OFFSET 生成临时 B-tree
+CREATE INDEX IF NOT EXISTS idx_changes_dom_ts_id ON changes (domain_id, ts DESC, id DESC);
+-- 图例时长聚合只读 (ts, new_ip)，覆盖索引避免回表
+CREATE INDEX IF NOT EXISTS idx_changes_dom_ts_ip ON changes (domain_id, ts, new_ip);
+CREATE INDEX IF NOT EXISTS idx_checks_ts ON checks (ts);
 """
 
 
@@ -240,6 +247,15 @@ def global_last_check():
     return conn().execute(
         "SELECT c.*, d.name AS domain_name, d.rrtype, d.resolver FROM checks c "
         "JOIN domains d ON d.id = c.domain_id ORDER BY c.ts DESC, c.id DESC LIMIT 1"
+    ).fetchone()
+
+
+def global_last_bad_check():
+    """最近一条非 ok 检查（首页“最近检查”只展示异常，正常不打扰）。"""
+    return conn().execute(
+        "SELECT c.*, d.name AS domain_name, d.rrtype FROM checks c "
+        "JOIN domains d ON d.id = c.domain_id WHERE c.status != 'ok' "
+        "ORDER BY c.ts DESC, c.id DESC LIMIT 1"
     ).fetchone()
 
 
@@ -442,13 +458,33 @@ def last_change_before(domain_id: int, ts: int):
     ).fetchone()
 
 
-def changes_list(domain_id: int, limit: int = 200, offset: int = 0):
-    # 保留 marker 行，让"基线重置"在变动记录中可审计
-    return conn().execute(
-        "SELECT * FROM changes WHERE domain_id = ? ORDER BY ts DESC, id DESC "
-        "LIMIT ? OFFSET ?",
-        (domain_id, limit, offset),
-    ).fetchall()
+def change_stats(domain_id: int, since: int | None = None) -> dict:
+    """统计契约（R2）：rows 含全部行，changes 只算真实变动。
+
+    - rows: 全部行数（含首次记录与基线重置 marker）；
+    - changes: old_ip IS NOT NULL 的变动次数；
+    - first_records: 首次记录（old_ip 为空、new_ip 非空）；
+    - markers: 基线重置（两者皆空）。
+    """
+    where = "domain_id = ?"
+    params: list = [domain_id]
+    if since is not None:
+        where += " AND ts >= ?"
+        params.append(since)
+    row = conn().execute(
+        "SELECT COUNT(*) AS rows, "
+        "SUM(CASE WHEN old_ip IS NOT NULL THEN 1 ELSE 0 END) AS changes, "
+        "SUM(CASE WHEN old_ip IS NULL AND new_ip IS NOT NULL THEN 1 ELSE 0 END) AS first_records, "
+        "SUM(CASE WHEN old_ip IS NULL AND new_ip IS NULL THEN 1 ELSE 0 END) AS markers "
+        f"FROM changes WHERE {where}",
+        params,
+    ).fetchone()
+    return {
+        "rows": row["rows"] or 0,
+        "changes": row["changes"] or 0,
+        "first_records": row["first_records"] or 0,
+        "markers": row["markers"] or 0,
+    }
 
 
 def count_change_rows(domain_id: int) -> int:
@@ -456,3 +492,93 @@ def count_change_rows(domain_id: int) -> int:
     return conn().execute(
         "SELECT COUNT(*) AS n FROM changes WHERE domain_id = ?", (domain_id,)
     ).fetchone()["n"]
+
+
+def changes_list(domain_id: int, limit: int = 20,
+                 before_ts: int | None = None, before_id: int | None = None,
+                 after_ts: int | None = None, after_id: int | None = None):
+    """keyset 分页（R3）：以 (ts,id) 为游标，翻页期间插入新行不重复、不漏行。
+
+    before_* 取更旧的一页（下一页），after_* 取更新的一页（上一页）。
+    两者都为空时返回第一页。
+    """
+    c = conn()
+    if before_ts is not None:
+        return c.execute(
+            "SELECT * FROM changes WHERE domain_id = ? "
+            "AND (ts < ? OR (ts = ? AND id < ?)) ORDER BY ts DESC, id DESC LIMIT ?",
+            (domain_id, before_ts, before_ts, before_id, limit),
+        ).fetchall()
+    if after_ts is not None:
+        # 先按升序取紧邻的 limit 行（更新方向），再翻转成统一的倒序展示
+        rows = c.execute(
+            "SELECT * FROM changes WHERE domain_id = ? "
+            "AND (ts > ? OR (ts = ? AND id > ?)) ORDER BY ts ASC, id ASC LIMIT ?",
+            (domain_id, after_ts, after_ts, after_id, limit),
+        ).fetchall()
+        return list(reversed(rows))
+    return c.execute(
+        "SELECT * FROM changes WHERE domain_id = ? ORDER BY ts DESC, id DESC LIMIT ?",
+        (domain_id, limit),
+    ).fetchall()
+
+
+def _has_side(domain_id: int, ts: int, row_id: int, older: bool) -> bool:
+    op = "<" if older else ">"
+    row = conn().execute(
+        "SELECT 1 FROM changes WHERE domain_id = ? "
+        f"AND (ts {op} ? OR (ts = ? AND id {op} ?)) LIMIT 1",
+        (domain_id, ts, ts, row_id),
+    ).fetchone()
+    return row is not None
+
+
+def has_older(domain_id: int, ts: int, row_id: int) -> bool:
+    return _has_side(domain_id, ts, row_id, older=True)
+
+
+def has_newer(domain_id: int, ts: int, row_id: int) -> bool:
+    return _has_side(domain_id, ts, row_id, older=False)
+
+
+def change_durations(domain_id: int, since: int, after_id: int | None,
+                     now: int) -> list:
+    """图例时长（R1）：用未采样的完整序列按 new_ip 汇总。
+
+    采样只影响时间线节点；此查询始终覆盖窗口内全部变动记录。
+    """
+    if after_id is None:
+        win = "ts >= ?"
+        params = [domain_id, now, now, since]
+    else:
+        win = "(ts > ? OR (ts = ? AND id > ?))"
+        params = [domain_id, now, now, since, since, after_id]
+    rows = conn().execute(
+        "WITH seq AS ("
+        "  SELECT id, ts, new_ip, LEAD(ts) OVER ("
+        "    PARTITION BY domain_id ORDER BY ts, id) AS next_ts"
+        "  FROM changes WHERE domain_id = ? AND new_ip IS NOT NULL"
+        ") SELECT new_ip, COUNT(*) AS n, "
+        "SUM(CASE WHEN next_ts IS NULL OR next_ts > ? THEN ? - ts ELSE next_ts - ts END) AS dur "
+        f"FROM seq WHERE {win} GROUP BY new_ip ORDER BY dur DESC, new_ip",
+        params,
+    ).fetchall()
+    return [{"ip": r["new_ip"], "rows": r["n"], "dur": max(0, r["dur"] or 0)}
+            for r in rows if r["new_ip"]]
+
+
+def first_change_ts(domain_id: int, since: int, after_id: int | None):
+    """窗口内第一条真实记录的 ts（用于基线段终点）；没有则返回 None。"""
+    if after_id is None:
+        row = conn().execute(
+            "SELECT MIN(ts) AS ts FROM changes WHERE domain_id = ? AND ts >= ? "
+            "AND new_ip IS NOT NULL",
+            (domain_id, since),
+        ).fetchone()
+    else:
+        row = conn().execute(
+            "SELECT MIN(ts) AS ts FROM changes WHERE domain_id = ? "
+            "AND (ts > ? OR (ts = ? AND id > ?)) AND new_ip IS NOT NULL",
+            (domain_id, since, since, after_id),
+        ).fetchone()
+    return row["ts"] if row and row["ts"] is not None else None

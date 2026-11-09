@@ -1,220 +1,271 @@
 {% extends "base.html" %}
+{% block title %}总览 · DDNS 监控{% endblock %}
+
+{% macro state_badge(state, last) -%}
+  {%- if state == 'bad' -%}
+    <span class="badge bad">{{ last.status|status_label }}</span>
+  {%- elif state == 'disabled' -%}
+    <span class="badge muted">已停用</span>
+  {%- elif state == 'pending' -%}
+    <span class="badge pending">待检查</span>
+  {%- else -%}
+    <span class="badge ok">正常</span>
+  {%- endif -%}
+{%- endmacro %}
+
 {% block content %}
 <div class="page-head">
-  <h1>监控总览</h1>
+  <div>
+    <h1>总览</h1>
+    <p class="muted">共 {{ overview.total }} 个监控项，{{ overview.enabled }} 个启用中。
+      {% if today.total %}今日已检查 {{ today.total }} 次。{% endif %}</p>
+  </div>
+  <a class="btn primary" href="/domain/new">添加域名</a>
 </div>
 
-<div class="card">
-  <div class="card-head">
-    <div><h2>最近一次检查</h2><div class="sub">各域名按自身间隔独立调度，此处为全局最新一次。</div></div>
-    {% if any_enabled %}<span class="badge ok"><span class="dot ok"></span>监控中</span>
-    {% else %}<span class="badge"><span class="dot"></span>已停止</span>{% endif %}
-  </div>
-  {% if g %}
-  <div class="stat-grid dense">
-    <div class="stat"><div class="label">域名</div>
-      <div class="value"><a href="/domain/{{ g.domain_id }}">{{ g.domain_name }}</a></div></div>
-    <div class="stat"><div class="label">记录类型</div><div class="value">{{ g.rrtype }}</div></div>
-    <div class="stat"><div class="label">结果</div>
-      <div class="value">{% if g.status == 'ok' %}<span class="dot ok"></span>成功{% else %}<span class="dot bad"></span>{{ g.status }}{% endif %}</div></div>
-    <div class="stat"><div class="label">解析值</div>
-      <div class="value">{% if g.ip %}<code class="ip">{{ g.ip }}</code>{% else %}<span class="muted">{{ g.error or "—" }}</span>{% endif %}</div></div>
-    <div class="stat"><div class="label">耗时</div>
-      <div class="value">{% if g.rtt_ms %}{{ g.rtt_ms|round(0)|int }}ms{% else %}—{% endif %}</div></div>
-    <div class="stat"><div class="label">DNS 服务器</div><div class="value">{{ g.resolver }}</div></div>
-    <div class="stat"><div class="label">检查时间</div><div class="value">{{ g.ts|fmt_ts }}</div></div>
-  </div>
-  {% else %}
-  <div class="empty">还没有检查记录，添加域名后会自动开始。</div>
-  {% endif %}
+{% if not overview.total %}
+<div class="card empty-state">
+  <h2>还没有监控项</h2>
+  <p>添加第一个域名后，这里会显示解析状态、IP 时间线与变动记录。</p>
+  <a class="btn primary" href="/domain/new">添加第一个域名</a>
 </div>
+{% else %}
 
-<div class="card">
-  <div class="card-head"><div><h2>今日检查</h2><div class="sub">从今日 00:00（本地时间）起累计。</div></div></div>
-  <div class="stat-grid">
-    <div class="stat"><div class="label">今日检查</div><div class="value">{{ today.total }}</div></div>
-    <div class="stat"><div class="label">成功</div><div class="value ok">{{ today.ok }}</div></div>
-    <div class="stat"><div class="label">失败</div><div class="value bad">{{ today.fail }}</div></div>
-    <div class="stat"><div class="label">IP 变动</div><div class="value">{{ today.changes }}</div>
-      <div class="sub">累计 {{ total_changes }} 次</div></div>
-    <div class="stat"><div class="label">当前异常</div><div class="value {% if abnormal %}bad{% endif %}">{{ abnormal }}</div>
-      <div class="sub">启用域名最近检查失败</div></div>
-    <div class="stat"><div class="label">成功率</div>
-      <div class="value">{% if today.total %}{{ today.rate }}%{% else %}—{% endif %}</div>
-      <div class="sub">成功 / 已完成检查</div></div>
+<section class="stats" aria-label="关键指标">
+  <div class="stat">
+    <span class="stat-label">监控项</span>
+    <strong class="stat-value">{{ overview.total }}</strong>
+    <span class="stat-sub">启用 {{ overview.enabled }} · 停用 {{ overview.disabled }}</span>
   </div>
-</div>
+  <div class="stat">
+    <span class="stat-label">今日成功率</span>
+    <strong class="stat-value">{{ today.rate }}<span class="unit">%</span></strong>
+    <span class="stat-sub">检查 {{ today.total }} 次 · 失败 {{ today.fail }} 次</span>
+  </div>
+  <div class="stat">
+    <span class="stat-label">今日 IP 变动</span>
+    <strong class="stat-value">{{ today.changes }}</strong>
+    <span class="stat-sub">7 天 {{ overview.c7 }} · 30 天 {{ overview.c30 }}</span>
+  </div>
+  <div class="stat{% if abnormal_count %} stat-alert{% endif %}">
+    <span class="stat-label">异常监控项</span>
+    <strong class="stat-value">{{ abnormal_count }}</strong>
+    <span class="stat-sub">{% if abnormal_count %}需要处理，见下方列表{% else %}全部正常{% endif %}</span>
+  </div>
+</section>
 
-<div class="card">
-  <div class="card-head"><div><h2>监控概况</h2></div></div>
-  <div class="stat-grid">
-    <div class="stat"><div class="label">监控域名</div><div class="value">{{ overview.total }}</div>
-      <div class="sub">IPv4 {{ overview.v4 }} 条 · IPv6 {{ overview.v6 }} 条</div></div>
-    <div class="stat"><div class="label">启用中</div><div class="value">{{ overview.enabled }}</div></div>
-    <div class="stat"><div class="label">已停用</div><div class="value">{{ overview.disabled }}</div></div>
-    <div class="stat"><div class="label">累计变动</div><div class="value">{{ overview.changes_all }}</div></div>
-    <div class="stat"><div class="label">7 天变动</div><div class="value">{{ overview.c7 }}</div></div>
-    <div class="stat"><div class="label">30 天变动</div><div class="value">{{ overview.c30 }}</div></div>
-  </div>
-</div>
-
-{% if chart %}
-<div class="card">
-  <div class="card-head"><div><h2>最近 24 小时</h2><div class="sub">按小时统计检查次数、IP 变动与失败次数。</div></div></div>
-  <div class="chart-wrap">
-    <svg id="hour-chart" class="chart" viewBox="0 0 {{ chart.w }} {{ chart.h }}" role="img"
-         aria-label="最近 24 小时检查次数、IP 变动与失败次数折线图">
-      {% for t in chart.yt %}
-      <line class="{{ 'base' if t.v == 0 else 'grid' }}" x1="{{ chart.pad_l }}" y1="{{ t.y }}"
-            x2="{{ chart.w - chart.pad_r }}" y2="{{ t.y }}"/>
-      <text x="{{ chart.pad_l - 8 }}" y="{{ t.y }}" text-anchor="end" dominant-baseline="central">{{ t.v }}</text>
-      {% endfor %}
-      {% for x in chart.xt %}
-      <text x="{{ x.x }}" y="{{ chart.h - 8 }}" text-anchor="{{ x.anchor }}">{{ x.label }}</text>
-      {% endfor %}
-      <line class="xhair" x1="0" y1="{{ chart.pad_t }}" x2="0" y2="{{ chart.pad_t + chart.plot_h }}"/>
-      {% for s in chart.series %}
-      <path class="s-{{ s.key }}" d="{{ s.d }}" fill="none" stroke-width="2"
-            stroke-linejoin="round" stroke-linecap="round"/>
-      {% endfor %}
-      <g>
-        {% for s in chart.series %}
-        <circle class="enddot s-{{ s.key }}" cx="{{ s.end_x }}" cy="{{ s.end_y }}" r="4"/>
-        {% endfor %}
-      </g>
-      <g>
-        {% for s in chart.series %}
-        <circle class="hdot s-{{ s.key }}" r="4.5" style="visibility:hidden"/>
-        {% endfor %}
-      </g>
-      <g>
-        {% for h in chart.hits %}
-        <rect class="hit" data-i="{{ loop.index0 }}" x="{{ h.x }}" y="0" width="{{ h.w }}"
-              height="{{ chart.h }}" tabindex="0" aria-label="{{ h.label }}"/>
-        {% endfor %}
-      </g>
-    </svg>
-    <div class="chart-tip" id="chart-tip" role="status">
-      <div class="t"></div>
-      <div class="rows"></div>
-    </div>
-  </div>
-  <ul class="legend">
-    {% for s in chart.series %}
-    <li><span class="lkey s-{{ s.key }}"></span>{{ s.label }}</li>
+{% if abnormal_count %}
+<section class="alert-panel" aria-labelledby="abnormal-h">
+  <h2 id="abnormal-h">需要处理（{{ abnormal_count }}）</h2>
+  <ul class="abnormal-list">
+    {% for r in abnormal_rows %}
+    <li>
+      <a href="/domain/{{ r.d.id }}">{{ r.d.name }}</a>
+      {{ state_badge(r.state, r.last) }}
+      <span class="muted">{{ r.last.ts|fmt_ago }}{% if r.last.error %} · {{ r.last.error }}{% endif %}</span>
+      <form method="post" action="/domain/{{ r.d.id }}/check" class="inline" data-pending="检查中…">
+        <button class="btn sm" type="submit">立即检查</button>
+      </form>
+    </li>
     {% endfor %}
   </ul>
-  <details class="chart-table">
-    <summary>数据表（逐小时）</summary>
-    <div class="table-wrap"><table class="small">
-      <thead><tr><th>时间</th><th>检查次数</th><th>失败</th><th>IP 变动</th></tr></thead>
-      <tbody>
-      {% for r in chart.rows %}
-      <tr><td>{{ r.t }}</td><td>{{ r.checks }}</td><td>{{ r.fail }}</td><td>{{ r.changes }}</td></tr>
-      {% endfor %}
-      </tbody>
-    </table></div>
-  </details>
-  <script id="chart-data" type="application/json">{{ chart.payload|tojson }}</script>
-  <script>
-  (function () {
-    var svg = document.getElementById('hour-chart');
-    var tip = document.getElementById('chart-tip');
-    var data;
-    try { data = JSON.parse(document.getElementById('chart-data').textContent); }
-    catch (e) { return; }
-    var xhair = svg.querySelector('.xhair');
-    var hdots = Array.prototype.slice.call(svg.querySelectorAll('.hdot'));
-    var hits = Array.prototype.slice.call(svg.querySelectorAll('.hit'));
-    var tTitle = tip.querySelector('.t');
-    var tRows = tip.querySelector('.rows');
-    var W = {{ chart.w }};
-
-    function show(i) {
-      var x = data.xs[i];
-      xhair.setAttribute('x1', x);
-      xhair.setAttribute('x2', x);
-      xhair.style.visibility = 'visible';
-      hdots.forEach(function (d, k) {
-        d.setAttribute('cx', x);
-        d.setAttribute('cy', data.series[k].ys[i]);
-        d.style.visibility = 'visible';
-      });
-      tTitle.textContent = data.hours[i];
-      tRows.replaceChildren.apply(tRows, data.series.map(function (s) {
-        var row = document.createElement('div');
-        row.className = 'row';
-        var key = document.createElement('span');
-        key.className = 'key s-' + s.key;
-        var v = document.createElement('span');
-        v.className = 'v';
-        v.textContent = s.vs[i];
-        var n = document.createElement('span');
-        n.className = 'n';
-        n.textContent = s.label;
-        row.appendChild(key); row.appendChild(v); row.appendChild(n);
-        return row;
-      }));
-      var rect = svg.getBoundingClientRect();
-      var scale = rect.width / W;
-      var px = data.xs[i] * scale;
-      tip.style.display = 'block';  /* 先显示才能量到真实宽度，display:none 时 offsetWidth 恒为 0 */
-      var half = tip.offsetWidth / 2 + 8;
-      px = Math.max(half, Math.min(px, rect.width - half));
-      tip.style.left = px + 'px';
-    }
-    function hide() {
-      xhair.style.visibility = 'hidden';
-      hdots.forEach(function (d) { d.style.visibility = 'hidden'; });
-      tip.style.display = 'none';
-    }
-    hits.forEach(function (h) {
-      var i = +h.getAttribute('data-i');
-      h.addEventListener('pointerenter', function () { show(i); });
-      h.addEventListener('pointerleave', hide);
-      h.addEventListener('focus', function () { show(i); });
-      h.addEventListener('blur', hide);
-    });
-  })();
-  </script>
-</div>
+  {% if abnormal_count > abnormal_rows|length %}
+  <p class="muted">另有 {{ abnormal_count - abnormal_rows|length }} 个异常项，见下方监控列表。</p>
+  {% endif %}
+</section>
+{% elif recent_bad %}
+<p class="callout">近期异常已恢复：<a href="/domain/{{ recent_bad.domain_id }}">{{ recent_bad.domain_name }}</a>
+  · {{ recent_bad.status|status_label }} · {{ recent_bad.ts|fmt_ago }}</p>
 {% endif %}
 
-<div class="card">
-  <div class="card-head"><h2>监控项</h2></div>
-  {% if not rows %}
-  <div class="empty">还没有监控项，点击右上角「添加域名」开始。</div>
-  {% else %}
-  <div class="table-wrap"><table>
-  <thead><tr>
-    <th>域名</th><th>当前解析</th><th>状态</th><th>最近检查</th>
-    <th>当前 IP 已稳定</th><th>7 天变动</th><th>30 天变动</th><th>操作</th>
-  </tr></thead>
-  <tbody>
-  {% for r in rows %}
-  <tr>
-    <td>
-      <a href="/domain/{{ r.d.id }}"><b>{{ r.d.name }}</b></a> <span class="tag">{{ r.d.rrtype }}</span>
-      {% if not r.d.enabled %}<span class="tag off">停用</span>{% endif %}
-      {% if r.d.note %}<div class="note">{{ r.d.note }}</div>{% endif %}
-    </td>
-    <td><code class="ip">{{ r.cur or "—" }}</code></td>
-    <td>{% if r.last and r.last.status == 'ok' %}<span class="dot ok"></span>正常
-        {% elif r.last %}<span class="dot bad"></span>{{ r.last.status }}
-        {% else %}<span class="dot"></span>待检查{% endif %}</td>
-    <td>{% if r.last %}{{ r.last.ts|fmt_ago }}{% else %}—{% endif %}</td>
-    <td>{{ r.stable }}</td>
-    <td>{{ r.c7 }}</td>
-    <td>{{ r.c30 }}</td>
-    <td class="actions">
-      <form method="post" action="/domain/{{ r.d.id }}/check" class="inline"><button class="btn sm">立即检查</button></form>
-      <a class="btn sm ghost" href="/domain/{{ r.d.id }}">详情</a>
-      <form method="post" action="/domain/{{ r.d.id }}/delete" class="inline"
-            onsubmit="return confirm('删除 {{ r.d.name }} 及其全部记录？')"><button class="btn sm danger">删除</button></form>
-    </td>
-  </tr>
-  {% endfor %}
-  </tbody></table></div>
+<section class="card" id="domains" aria-labelledby="domains-h">
+  <div class="card-head">
+    <h2 id="domains-h">监控项</h2>
+    <span class="muted">异常与待检查排在最前</span>
+  </div>
+
+  {% if rows %}
+  <div class="table-wrap monitor-table-wrap">
+    <table class="data-table monitor-table">
+      <caption class="sr-only">全部监控项</caption>
+      <thead>
+        <tr>
+          <th scope="col">监控项</th>
+          <th scope="col">当前 IP</th>
+          <th scope="col">状态</th>
+          <th scope="col" class="num">稳定时长</th>
+          <th scope="col" class="num">7 天变动</th>
+          <th scope="col"><span class="sr-only">操作</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr class="row-{{ r.state }}">
+          <td>
+            <a class="domain-link" href="/domain/{{ r.d.id }}">{{ r.d.name }}</a>
+            <div class="sub"><span class="badge type">{{ r.d.rrtype }}</span>
+              <span class="muted">{{ r.d.interval_sec // 60 }} 分钟</span></div>
+          </td>
+          <td class="mono">{{ r.cur|fmt_empty }}</td>
+          <td>{{ state_badge(r.state, r.last) }}
+            <div class="sub muted">{{ r.last.ts|fmt_ago if r.last else '从未检查' }}</div></td>
+          <td class="num">{{ r.stable }}</td>
+          <td class="num">{{ r.c7 }}</td>
+          <td>
+            <div class="row-actions">
+              <form method="post" action="/domain/{{ r.d.id }}/check" class="inline" data-pending="检查中…">
+                <button class="btn sm" type="submit" {% if not r.d.enabled %}disabled title="监控项已停用"{% endif %}>立即检查</button>
+              </form>
+              <a class="btn sm" href="/domain/{{ r.d.id }}#settings">设置</a>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <ul class="monitor-cards">
+    {% for r in rows %}
+    <li class="monitor-card row-{{ r.state }}">
+      <div class="mc-head">
+        <a class="domain-link" href="/domain/{{ r.d.id }}">{{ r.d.name }}</a>
+        {{ state_badge(r.state, r.last) }}
+      </div>
+      <dl class="mc-grid">
+        <div><dt>当前 IP</dt><dd class="mono">{{ r.cur|fmt_empty }}</dd></div>
+        <div><dt>最近检查</dt><dd>{{ r.last.ts|fmt_ago if r.last else '从未' }}</dd></div>
+        <div><dt>7 天变动</dt><dd class="num">{{ r.c7 }}</dd></div>
+        <div><dt>记录类型</dt><dd>{{ r.d.rrtype }}</dd></div>
+      </dl>
+      <div class="row-actions">
+        <form method="post" action="/domain/{{ r.d.id }}/check" class="inline" data-pending="检查中…">
+          <button class="btn sm" type="submit" {% if not r.d.enabled %}disabled{% endif %}>立即检查</button>
+        </form>
+        <a class="btn sm" href="/domain/{{ r.d.id }}#settings">设置</a>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
   {% endif %}
-</div>
+</section>
+<section class="card chart-card" aria-labelledby="chart-h">
+  <div class="card-head">
+    <div>
+      <h2 id="chart-h">最近 24 小时</h2>
+      <p class="muted">上图检查次数，下图 IP 变动与失败；两图共用时间轴，量级分开。</p>
+    </div>
+    <ul class="chart-legend" aria-label="图例">
+      {% for l in chart.legend %}
+      <li><span class="sw {{ l.key }}" aria-hidden="true"></span>{{ l.label }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  <p id="chart-tip" class="chart-tip" aria-live="polite">聚焦图表后按 ← → 逐小时查看数据。</p>
+  <div class="chart-scroll">
+    <svg id="chart-svg" class="chart-svg" viewBox="0 0 {{ chart.w }} {{ chart.h }}"
+         role="group" aria-labelledby="chart-h chart-desc" tabindex="0">
+      <desc id="chart-desc">上方柱状图为每小时检查次数，下方折线为 IP 变动与失败次数。使用左右方向键逐小时读取，或展开下方数据表。</desc>
+
+      {% for t in chart.up_ticks %}
+      <line class="grid-line" x1="{{ chart.pad_l }}" x2="{{ chart.w - chart.pad_r }}" y1="{{ t.y }}" y2="{{ t.y }}"></line>
+      <text class="axis-label" x="{{ chart.pad_l - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.v }}</text>
+      {% endfor %}
+      <text class="panel-label" x="{{ chart.pad_l }}" y="{{ chart.up_top - 8 }}">检查次数 / 小时</text>
+      {% for b in chart.up_bars %}
+      <rect class="bar-checks" x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ b.h }}" rx="2"></rect>
+      {% endfor %}
+
+      <line class="divider" x1="{{ chart.pad_l }}" x2="{{ chart.w - chart.pad_r }}" y1="{{ chart.divider_y }}" y2="{{ chart.divider_y }}"></line>
+
+      {% for t in chart.lo_ticks %}
+      <line class="grid-line" x1="{{ chart.pad_l }}" x2="{{ chart.w - chart.pad_r }}" y1="{{ t.y }}" y2="{{ t.y }}"></line>
+      <text class="axis-label" x="{{ chart.pad_l - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.v }}</text>
+      {% endfor %}
+      <text class="panel-label" x="{{ chart.pad_l }}" y="{{ chart.lo_top - 8 }}">IP 变动 / 失败</text>
+
+      {% for s in chart.lower_series %}
+      <path class="series {{ s.class }}" d="{{ s.d }}"></path>
+      {% for p in s.dots %}
+        {% if s.key == 'changes' %}
+        <circle class="dot {{ s.class }}" cx="{{ p.x }}" cy="{{ p.y }}" r="2.6"></circle>
+        {% else %}
+        <rect class="dot {{ s.class }}" x="{{ p.x - 2.6 }}" y="{{ p.y - 2.6 }}" width="5.2" height="5.2"></rect>
+        {% endif %}
+      {% endfor %}
+      {% endfor %}
+
+      {% for t in chart.x_ticks %}
+      <line class="tick-mark" x1="{{ t.x }}" x2="{{ t.x }}" y1="{{ chart.lo_top + chart.lo_h }}" y2="{{ chart.lo_top + chart.lo_h + 4 }}"></line>
+      <text class="axis-label" x="{{ t.x }}" y="{{ chart.x_label_y }}" text-anchor="{{ t.anchor }}">{{ t.label }}</text>
+      {% endfor %}
+
+      {% for h in chart.hits %}
+      <g class="chart-hit" data-label="{{ h.label }}">
+        <rect x="{{ h.x }}" y="{{ chart.up_top }}" width="{{ h.w }}" height="{{ chart.lo_top + chart.lo_h - chart.up_top }}" fill="transparent"></rect>
+      </g>
+      {% endfor %}
+      <rect id="chart-cursor" class="chart-cursor" x="0" y="{{ chart.up_top }}" width="0"
+            height="{{ chart.lo_top + chart.lo_h - chart.up_top }}" rx="3"></rect>
+    </svg>
+  </div>
+
+  <details class="data-details">
+    <summary>查看逐小时数据表</summary>
+    <div class="table-wrap">
+      <table class="data-table">
+        <caption class="sr-only">最近 24 小时逐小时数据</caption>
+        <thead><tr><th scope="col">小时</th><th scope="col" class="num">检查</th><th scope="col" class="num">失败</th><th scope="col" class="num">IP 变动</th></tr></thead>
+        <tbody>
+          {% for row in chart.rows %}
+          <tr><th scope="row">{{ row.t }}</th><td class="num">{{ row.checks }}</td><td class="num">{{ row.fail }}</td><td class="num">{{ row.changes }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+</section>
+
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if chart %}
+<script>
+(function () {
+  var svg = document.getElementById('chart-svg');
+  if (!svg) return;
+  var hits = Array.prototype.slice.call(svg.querySelectorAll('.chart-hit'));
+  var cursor = document.getElementById('chart-cursor');
+  var tip = document.getElementById('chart-tip');
+  if (!hits.length || !cursor || !tip) return;
+  var idx = hits.length - 1;
+
+  function show(i) {
+    idx = (i + hits.length) % hits.length;
+    var rect = hits[idx].querySelector('rect');
+    cursor.setAttribute('x', rect.getAttribute('x'));
+    cursor.setAttribute('width', rect.getAttribute('width'));
+    tip.textContent = hits[idx].getAttribute('data-label');
+  }
+
+  hits.forEach(function (g, i) {
+    g.addEventListener('pointerenter', function () { show(i); });
+  });
+  svg.addEventListener('focus', function () { show(idx); });
+  svg.addEventListener('keydown', function (e) {
+    var next = null;
+    if (e.key === 'ArrowLeft') next = idx - 1;
+    else if (e.key === 'ArrowRight') next = idx + 1;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = hits.length - 1;
+    if (next !== null) {
+      e.preventDefault();
+      show(next);
+    }
+  });
+  show(idx);
+})();
+</script>
+{% endif %}
 {% endblock %}

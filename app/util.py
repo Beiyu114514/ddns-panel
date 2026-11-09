@@ -1,5 +1,4 @@
 import datetime
-import hashlib
 import ipaddress
 
 # Cloudflare 官方公布的 IP 段，用于识别"橙云"代理域名
@@ -13,6 +12,19 @@ CF_V6 = [
     "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
     "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
 ]
+
+# 固定 12 色调色板：颜色索引由首次出现顺序分配，实际色值在 style.css 的
+# --ip-1..--ip-12 中按浅色/深色主题分别定义，保证两种主题下图形对比度 ≥ 3:1。
+IP_PALETTE_SIZE = 12
+
+STATUS_LABELS = {
+    "ok": "正常",
+    "timeout": "超时",
+    "nxdomain": "域名不存在",
+    "noanswer": "无应答",
+    "error": "解析错误",
+    "pending": "待检查",
+}
 
 
 def is_cloudflare(ip: str) -> bool:
@@ -30,6 +42,20 @@ def is_cloudflare(ip: str) -> bool:
         if any(addr in ipaddress.ip_network(n) for n in nets):
             return True
     return False
+
+
+def status_label(status) -> str:
+    """把内部状态码统一成中文文案，模板不再直接输出 ok/timeout。"""
+    if not status:
+        return STATUS_LABELS["pending"]
+    return STATUS_LABELS.get(str(status), str(status))
+
+
+def fmt_empty(value, kind: str = "text") -> str:
+    """统一空值表达：文本 —、时间 从未、列表 暂无。"""
+    if value is None or value == "":
+        return {"time": "从未", "list": "暂无"}.get(kind, "—")
+    return value
 
 
 def fmt_ts(ts) -> str:
@@ -70,9 +96,10 @@ def fmt_dur(sec) -> str:
     return f"{sec} 秒"
 
 
-def ip_color(ip: str) -> str:
-    h = int(hashlib.md5(ip.encode()).hexdigest(), 16) % 360
-    return f"hsl({h}, 60%, 55%)"
+def fmt_rtt(ms) -> str:
+    if not ms:
+        return "—"
+    return f"{round(ms):d}ms"
 
 
 def to_int(v, default: int) -> int:

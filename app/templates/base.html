@@ -10,21 +10,67 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<a class="skip-link" href="#main">跳到主要内容</a>
+
+{% macro navlinks(req) -%}
+<a href="/" {% if req.url.path == '/' %}aria-current="page"{% endif %}>总览</a>
+<a href="/domain/new" {% if req.url.path == '/domain/new' %}aria-current="page"{% endif %}>添加域名</a>
+<a href="/settings" {% if req.url.path == '/settings' %}aria-current="page"{% endif %}>设置</a>
+<form method="post" action="/logout" class="inline" data-pending="退出中…"><button type="submit" class="link">退出</button></form>
+{%- endmacro %}
+
 {% if not hide_nav %}
-<nav>
-  <a class="brand" href="/">DDNS 监控</a>
-  <div class="links">
-    <a href="/" {% if request.url.path == '/' %}class="on"{% endif %}>总览</a>
-    <a href="/domain/new" {% if request.url.path == '/domain/new' %}class="on"{% endif %}>添加域名</a>
-    <a href="/settings" {% if request.url.path == '/settings' %}class="on"{% endif %}>设置</a>
-    <form method="post" action="/logout" class="inline"><button class="link">退出</button></form>
-  </div>
-</nav>
+<header class="topbar">
+  <nav class="wrap topnav" aria-label="主导航">
+    <a class="brand" href="/">DDNS 监控</a>
+    <div class="nav-desktop links">{{ navlinks(request) }}</div>
+    <details class="nav-mobile">
+      <summary class="nav-toggle">菜单</summary>
+      <div class="links nav-drawer">{{ navlinks(request) }}</div>
+    </details>
+  </nav>
+</header>
 {% endif %}
-{% if request.query_params.get('msg') %}<div class="flash ok">{{ request.query_params.get('msg') }}</div>{% endif %}
-{% if request.query_params.get('err') %}<div class="flash bad">{{ request.query_params.get('err') }}</div>{% endif %}
-<main>
-{% block content %}{% endblock %}
+
+<main id="main" class="wrap{% if hide_nav %} login-main{% endif %}" tabindex="-1">
+  {% set f = request.state.flash %}
+  {% if f %}
+    {% if f.get('msg') %}<div class="flash ok" role="status">{{ f.get('msg') }}</div>{% endif %}
+    {% if f.get('err') %}<div class="flash bad" role="alert">{{ f.get('err') }}</div>{% endif %}
+  {% endif %}
+  {% block content %}{% endblock %}
 </main>
+<script>
+(function () {
+  // 提交后禁用按钮，避免重复提交（无 JS 时表单仍可正常提交）
+  document.querySelectorAll('form[data-pending]').forEach(function (form) {
+    form.addEventListener('submit', function (event) {
+      var button = event.submitter || form.querySelector('button[type="submit"]');
+      if (!button || button.disabled) return;
+      form.setAttribute('aria-busy', 'true');
+      button.dataset.label = button.textContent;
+      button.textContent = button.getAttribute('data-pending') || form.getAttribute('data-pending') || '处理中…';
+      button.disabled = true;
+      // DNS 查询最长约 10 秒；留足余量，避免慢请求期间被重复提交
+      window.setTimeout(function () {
+        button.disabled = false;
+        if (button.dataset.label) button.textContent = button.dataset.label;
+      }, 30000);
+    });
+  });
+
+  // 移动端菜单：Esc 关闭、点击外部关闭
+  var nav = document.querySelector('.nav-mobile');
+  if (nav) {
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && nav.open) { nav.open = false; nav.querySelector('summary').focus(); }
+    });
+    document.addEventListener('click', function (e) {
+      if (nav.open && !nav.contains(e.target)) nav.open = false;
+    });
+  }
+})();
+</script>
+{% block scripts %}{% endblock %}
 </body>
 </html>

@@ -1,39 +1,58 @@
 {% extends "base.html" %}
+{% block title %}添加监控项 · DDNS 监控{% endblock %}
+
 {% block content %}
-<div class="page-head"><h1>添加监控域名</h1></div>
-<div class="card">
-  <form method="post" action="/domain/new" class="form narrow">
-    <label>域名
-      <input name="name" placeholder="home.example.com" required>
-    </label>
-    <label>记录类型
-      <select name="rrtype">
-        <option value="A">A (IPv4)</option>
-        <option value="AAAA">AAAA (IPv6)</option>
-      </select>
-    </label>
-    <label>DNS 服务器（用于查询解析）
-      <input name="resolver" value="223.5.5.5" list="resolver-list" required>
-      <datalist id="resolver-list">
-        {% for r in resolvers %}<option value="{{ r }}">{% endfor %}
-      </datalist>
-    </label>
-    <label>检查间隔
-      <select name="interval_sec">
-        <option value="60">1 分钟</option>
-        <option value="300" selected>5 分钟</option>
-        <option value="600">10 分钟</option>
-        <option value="1800">30 分钟</option>
-        <option value="3600">1 小时</option>
-        <option value="7200">2 小时</option>
-        <option value="21600">6 小时</option>
-        <option value="86400">24 小时</option>
-      </select>
-    </label>
-    <label>备注（可选）<input name="note" maxlength="200" placeholder="如: 家里宽带 IPv4"></label>
-    <button class="btn wide">添加并立即检查</button>
-    <p class="hint">监控 AAAA 记录不需要本机具备 IPv6 网络，DNS 查询走现有网络即可。<br>
-    若域名开了 Cloudflare 橙云代理，解析到的是 CF 节点 IP，添加时会自动提示。</p>
-  </form>
+<nav class="breadcrumb" aria-label="面包屑">
+  <a href="/">总览</a><span aria-hidden="true">/</span><span>添加监控项</span>
+</nav>
+
+<div class="page-head">
+  <div>
+    <h1>添加监控项</h1>
+    <p class="muted">添加后会立即解析一次作为基线，之后按间隔自动检查。</p>
+  </div>
 </div>
+
+{% if error %}<div class="alert error" id="name-error" role="alert">{{ error }}</div>{% endif %}
+
+<section class="card">
+  <form method="post" action="/domain/new" class="form narrow" data-pending="创建中…">
+    <label for="name">域名</label>
+    <input id="name" name="name" value="{{ draft.name }}" required
+           autocomplete="off" autocorrect="off" spellcheck="false" autocapitalize="none" inputmode="url"
+           placeholder="example.com"
+           {% if error %}aria-invalid="true" aria-describedby="name-hint name-error"{% else %}aria-describedby="name-hint"{% endif %}
+           {% if not draft.name %}autofocus{% endif %}>
+    <p id="name-hint" class="hint">只填主机名（如 example.com、home.example.com），不要包含协议或路径。</p>
+
+    <label for="rrtype">记录类型</label>
+    <select id="rrtype" name="rrtype">
+      <option value="A" {% if draft.rrtype == 'A' %}selected{% endif %}>A（IPv4）</option>
+      <option value="AAAA" {% if draft.rrtype == 'AAAA' %}selected{% endif %}>AAAA（IPv6）</option>
+    </select>
+
+    <label for="resolver">DNS 服务器</label>
+    <input id="resolver" name="resolver" value="{{ draft.resolver }}" required
+           list="resolver-list" inputmode="decimal" autocomplete="off" spellcheck="false">
+    <datalist id="resolver-list">
+      {% for r in resolvers %}<option value="{{ r }}"></option>{% endfor %}
+    </datalist>
+    <p class="hint">建议使用公共 DNS（如 1.1.1.1），避免运营商 DNS 缓存影响判断。</p>
+
+    <label for="interval_sec">检查间隔</label>
+    <select id="interval_sec" name="interval_sec">
+      {% for sec, label in INTERVAL_OPTIONS %}
+      <option value="{{ sec }}" {% if draft.interval_sec == sec %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="note">备注（可选）</label>
+    <input id="note" name="note" value="{{ draft.note }}" maxlength="200" placeholder="如：家里宽带 IPv4">
+
+    <div class="form-actions">
+      <button class="btn primary" type="submit">添加并检查</button>
+      <a class="btn" href="/">取消</a>
+    </div>
+  </form>
+</section>
 {% endblock %}
