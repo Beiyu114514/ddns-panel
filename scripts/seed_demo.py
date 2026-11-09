@@ -5,7 +5,8 @@
     .venv/bin/python scripts/seed_demo.py
     .venv/bin/python scripts/seed_demo.py --data-dir /tmp/ddns-demo --changes 10000
 
-脚本只写 DDNS_DATA_DIR 指向的 SQLite，不会碰真实 data/（除非显式指定）。
+不传 --data-dir 时写入新建的临时目录，绝不回落到仓库 data/ 或 DDNS_DATA_DIR，
+避免在部署机上误把演示数据写进生产库。
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import argparse
 import os
 import random
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -107,10 +109,12 @@ def seed(db, changes: int, seed_value: int = 20261109) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", help="数据目录（默认沿用 DDNS_DATA_DIR 或仓库 data/）")
+    ap.add_argument("--data-dir",
+                    help="数据目录（默认新建临时目录；显式指定才会写入目标库）")
     ap.add_argument("--changes", type=int, default=10000, help="第一个域名的变动行数")
     args = ap.parse_args()
-    db = _prepare(args.data_dir)
+    data_dir = args.data_dir or tempfile.mkdtemp(prefix="ddns-demo-")
+    db = _prepare(data_dir)
     report = seed(db, args.changes)
     print(f"数据目录: {db.DATA_DIR}")
     for name, info in report.items():

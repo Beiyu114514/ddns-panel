@@ -35,6 +35,8 @@ TEXT_PAIRS = [
     ("警告徽标", "warn", "surface"),
     ("主按钮文字", "on-accent", "accent-solid"),
     ("主按钮文字", "on-accent", "accent-solid-hover"),
+    ("危险按钮文字", "on-danger", "danger-solid"),
+    ("危险按钮文字", "on-danger", "danger-solid-hover"),
     ("类型徽标", "accent", "accent-soft"),
 ]
 GRAPHIC_PAIRS = [

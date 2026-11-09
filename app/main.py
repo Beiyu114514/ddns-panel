@@ -106,8 +106,11 @@ async def flash_middleware(request: Request, call_next):
     request.state.flash = _read_flash(request)
     response = await call_next(request)
     if request.cookies.get(FLASH_COOKIE):
-        # 服务端已消费，立刻清掉；刷新页面不会重复提示
-        response.delete_cookie(FLASH_COOKIE, path="/")
+        # 服务端已消费，立刻清掉；刷新页面不会重复提示。
+        # 但处理器刚设置的新 flash 不能被这条删除头覆盖（同名 Set-Cookie 后者生效）。
+        set_cookies = response.headers.getlist("set-cookie")
+        if not any(c.startswith(f"{FLASH_COOKIE}=") for c in set_cookies):
+            response.delete_cookie(FLASH_COOKIE, path="/")
     return response
 
 
@@ -159,6 +162,11 @@ def _is_trusted(ip: str) -> bool:
     return any(a in n for a in candidates for n in TRUSTED_PROXIES)
 
 
+def _is_trusted_hop(ip: str) -> bool:
+    # CDN 回源地址不在本机反代网段内，但同样是可信代理链的一跳
+    return _is_trusted(ip) or is_cloudflare(ip)
+
+
 def _proxy_hops() -> int:
     return max(1, to_int(os.environ.get("TRUSTED_PROXY_HOPS", "1"), 1))
 
@@ -181,6 +189,10 @@ def _client_ip(request: Request) -> str:
     idx = len(chain) - TRUSTED_PROXY_HOPS
     if idx < 0:
         # XFF 比声明的代理层数还短，头不完整，退回对端地址
+        return peer
+    # 被跳过的右侧跳数必须是已知代理（本机反代网段或 CDN 回源网段），
+    # 否则短链/伪造链会让客户端自己填的条目成为限速 key
+    if not all(_is_trusted_hop(p) for p in chain[idx + 1:]):
         return peer
     return chain[idx]
 
@@ -286,7 +298,7 @@ async def login(request: Request):
         exp = now + 30 * 86400
         resp = RedirectResponse("/", 303)
         resp.set_cookie(COOKIE, f"{exp}.{_sign(exp)}", max_age=30 * 86400,
-                        httponly=True, samesite="lax")
+                        httponly=True, samesite="lax", secure=True)
         return resp
     if ok:
         # 校验通过但密码已在验证期间被改掉：不签 cookie，也不计入失败次数
@@ -389,8 +401,8 @@ def _build_chart(hours: int = 24) -> dict:
                 "dots": pts}
 
     lower_series = [
-        _line(b_changes, "changes", "IP 变动", "s-changes", _lo_y),
-        _line(b_fail, "fail", "失败", "s-fail", _lo_y),
+        _line(b_changes, "changes", "IP 变动", "changes", _lo_y),
+        _line(b_fail, "fail", "失败", "fail", _lo_y),
     ]
 
     x_idx = [0, 6, 12, 18, hours - 1]
@@ -556,7 +568,8 @@ def _build_timeline(domain_id: int, days: int, now: int) -> dict:
 
     counts = db.change_stats(domain_id, since=window_since)
     window_count = db.count_changes_window(domain_id, window_since, after_id)
-    sampled = window_count > TIMELINE_MAX_SEGMENTS
+    # 采样阈值按可绘制行数（含首次记录）判断，展示计数只算真实变动
+    sampled = db.count_timeline_rows(domain_id, window_since, after_id) > TIMELINE_MAX_SEGMENTS
     bucket = None
     bucket_label = None
     if sampled:
@@ -608,7 +621,8 @@ def _build_timeline(domain_id: int, days: int, now: int) -> dict:
     durations = {d["ip"]: d["dur"] for d in db.change_durations(
         domain_id, window_since, after_id, now)}
     if baseline:
-        end = first_ts if first_ts and first_ts > window_since else now
+        # first_ts == window_since 时基线段宽度为 0，不能把整个窗口都算给它
+        end = first_ts if first_ts is not None else now
         durations[baseline] = durations.get(baseline, 0) + max(0, min(end, now) - window_since)
     ordered = sorted(((ip, dur) for ip, dur in durations.items() if ip and dur > 0),
                      key=lambda kv: (-kv[1], kv[0]))
@@ -745,8 +759,13 @@ async def domain_detail(request: Request, domain_id: int, days: int = 30, page: 
 
     stats = db.change_stats(domain_id)
     cur = db.current_ip(domain_id)
+    # 历史数据/脚本可能写入不在下拉档位里的间隔；补一个当前值选项，
+    # 否则浏览器会回落到第一个选项，保存时静默改掉检查间隔
+    interval_custom = d["interval_sec"] if all(
+        d["interval_sec"] != sec for sec, _ in INTERVAL_OPTIONS) else None
     return templates.TemplateResponse(request, "domain.html", {
         "d": d,
+        "interval_custom": interval_custom,
         "resolvers": RESOLVERS,
         "cur": cur,
         "cf_warn": is_cloudflare(cur),

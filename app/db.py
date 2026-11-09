@@ -106,7 +106,8 @@ def init():
                 os.close(fd)
             raise
         set_setting("password_hash", hash_password(pw))
-        print(f"[setup] 初始密码: {pw} （已写入 {path}，登录后请修改）", flush=True)
+        # 不要把密码写进 stdout：容器日志/journald 会长期保留，删除密码文件也无济于事
+        print(f"[setup] 初始密码已写入 {path}，登录后请修改", flush=True)
 
 
 def _migrate(c: sqlite3.Connection):
@@ -251,10 +252,14 @@ def global_last_check():
 
 
 def global_last_bad_check():
-    """最近一条非 ok 检查（首页“最近检查”只展示异常，正常不打扰）。"""
+    """最近一条非 ok 检查（首页“最近检查”只展示异常，正常不打扰）。
+
+    停用项不再监控，它的旧失败不能驱动首页“近期异常已恢复”提示。
+    """
     return conn().execute(
         "SELECT c.*, d.name AS domain_name, d.rrtype FROM checks c "
-        "JOIN domains d ON d.id = c.domain_id WHERE c.status != 'ok' "
+        "JOIN domains d ON d.id = c.domain_id "
+        "WHERE c.status != 'ok' AND d.enabled = 1 "
         "ORDER BY c.ts DESC, c.id DESC LIMIT 1"
     ).fetchone()
 
@@ -379,7 +384,24 @@ def count_changes(domain_id: int) -> int:
 
 
 def count_changes_window(domain_id: int, since: int, after_id: int | None = None) -> int:
-    """窗口内可绘制的时间线变动数。after_id 非空时按 (ts,id) 复合边界排除重置前记录。"""
+    """窗口内真实 IP 变动数（不含首次记录）。after_id 非空时按 (ts,id) 复合边界排除重置前记录。"""
+    if after_id is None:
+        row = conn().execute(
+            "SELECT COUNT(*) AS n FROM changes WHERE domain_id = ? AND ts >= ? "
+            "AND old_ip IS NOT NULL",
+            (domain_id, since),
+        ).fetchone()
+    else:
+        row = conn().execute(
+            "SELECT COUNT(*) AS n FROM changes WHERE domain_id = ? "
+            "AND (ts > ? OR (ts = ? AND id > ?)) AND old_ip IS NOT NULL",
+            (domain_id, since, since, after_id),
+        ).fetchone()
+    return row["n"]
+
+
+def count_timeline_rows(domain_id: int, since: int, after_id: int | None = None) -> int:
+    """窗口内可绘制行数（含首次记录，不含 marker），用于决定时间线是否采样。"""
     if after_id is None:
         row = conn().execute(
             "SELECT COUNT(*) AS n FROM changes WHERE domain_id = ? AND ts >= ? "

@@ -48,7 +48,7 @@ def main() -> int:
     did = _seed()
     from app.main import app
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="https://testserver")
     pw = (Path(db.DATA_DIR) / "initial_password.txt").read_text(encoding="utf-8").strip()
     client.post("/login", data={"password": pw}, follow_redirects=False)
 
@@ -60,7 +60,7 @@ def main() -> int:
         "设置": (client, "/settings"),
     }
     # 登录页需要未登录状态，单独用新 client 取
-    anon = TestClient(app)
+    anon = TestClient(app, base_url="https://testserver")
 
     failures: list[str] = []
     titles: list[str] = []

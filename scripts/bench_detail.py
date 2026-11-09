@@ -34,7 +34,7 @@ def main() -> int:
     rows = c.execute("SELECT COUNT(*) AS n FROM changes WHERE domain_id = ?",
                      (args.domain_id,)).fetchone()["n"]
     pw = (Path(db.DATA_DIR) / "initial_password.txt").read_text(encoding="utf-8").strip()
-    client = TestClient(app)
+    client = TestClient(app, base_url="https://testserver")
     assert client.post("/login", data={"password": pw},
                        follow_redirects=False).status_code == 303
     times, size = [], 0

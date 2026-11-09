@@ -211,37 +211,58 @@ class Monitor:
                 db.add_change(d["id"], prev, res["ip"], notify=prev is not None)
                 print(f"[change] {d['name']}: {prev} -> {res['ip']}", flush=True)
             self._queue_change(d, st, now, pending)
-            if st["alerted"] and self._deliverable("recover"):
+            # 上一条告警/恢复还在队列里时先不排恢复：等它发送成功再排，
+            # 否则失败告警未送达、恢复却先发出去，状态会互相覆盖
+            if st["alerted"] and not st.get("alert_pending") \
+                    and self._deliverable("recover"):
                 # 通知关闭时不能清 alerted：否则恢复事件被吞掉，重新开启后无法补发
                 st["alerted"] = False
+                st["alert_pending"] = True
+                st["alert_seq"] = st.get("alert_seq", 0) + 1
+                seq = st["alert_seq"]
 
                 def rollback_recover():
-                    if not st["alerted"]:
+                    # 只有状态仍属于本条消息时才回滚，避免旧消息覆盖新检查
+                    if st.get("alert_seq") == seq and st.get("alert_pending"):
+                        st["alert_pending"] = False
                         st["alerted"] = True
+
+                def commit_recover():
+                    if st.get("alert_seq") == seq:
+                        st["alert_pending"] = False
 
                 pending.append((
                     f"解析恢复正常\n域名: {d['name']} ({d['rrtype']})\n当前 IP: {res['ip']}",
-                    "recover", rollback_recover, None))
+                    "recover", rollback_recover, commit_recover))
         else:
             # 变动是已经发生的事实，不应被当前解析失败阻塞；先补发再判断告警
             self._queue_change(d, st, now, pending)
             st["fails"] += 1
-            if st["fails"] >= FAIL_THRESHOLD and self._deliverable("fail"):
+            if st["fails"] >= FAIL_THRESHOLD and not st.get("alert_pending") \
+                    and self._deliverable("fail"):
                 if not st["alerted"] or now - st["last_alert"] >= \
                         self._tg_conf()["cooldown_min"] * 60:
                     prev_alerted, prev_last_alert = st["alerted"], st["last_alert"]
                     st["alerted"] = True
                     st["last_alert"] = now
+                    st["alert_pending"] = True
+                    st["alert_seq"] = st.get("alert_seq", 0) + 1
+                    seq = st["alert_seq"]
 
                     def rollback_fail():
-                        if st["alerted"] and st["last_alert"] == now:
+                        if st.get("alert_seq") == seq and st.get("alert_pending"):
+                            st["alert_pending"] = False
                             st["alerted"] = prev_alerted
                             st["last_alert"] = prev_last_alert
+
+                    def commit_fail():
+                        if st.get("alert_seq") == seq:
+                            st["alert_pending"] = False
 
                     pending.append((
                         f"解析持续失败\n域名: {d['name']} ({d['rrtype']})\n"
                         f"错误: {res['error'] or res['status']}\n已连续失败 {st['fails']} 次",
-                        "fail", rollback_fail, None))
+                        "fail", rollback_fail, commit_fail))
         return pending
 
     def _queue_change(self, d, st, now: int, pending: list[tuple]):
@@ -253,16 +274,24 @@ class Monitor:
         pend = db.pending_change(d["id"])
         if not pend:
             return
-        if not self._deliverable("change"):
-            # 关闭期间不积压，否则重新开启后会补发很久以前的变动
+        conf = self._tg_conf()
+        if not (conf["on"] and conf["on_change"]):
+            # 用户主动关闭：不积压，否则重新开启后会补发很久以前的变动
             db.mark_changes_notified(d["id"])
             return
-        if now - st.get("last_change_notify", 0) < \
-                self._tg_conf()["change_cooldown_min"] * 60:
+        if not (conf["token"] and conf["chat"]):
+            # 只是凭据没填完整：保留 notified=0，补全后仍可补发
+            return
+        if st.get("change_pending"):
+            # 上一条变动消息还在队列/发送中，DB 里仍是 notified=0；
+            # 此时再次入队会重复发送，等它 commit/rollback 后再处理
+            return
+        if now - st.get("last_change_notify", 0) < conf["change_cooldown_min"] * 60:
             return
         p_old, p_new, p_ts, last_id = pend
         prev_lcn = st.get("last_change_notify", 0)
         st["last_change_notify"] = now
+        st["change_pending"] = True
         st["change_seq"] = st.get("change_seq", 0) + 1
         seq = st["change_seq"]
 
@@ -270,8 +299,11 @@ class Monitor:
             # 只在状态仍属于本条消息时回滚，避免覆盖后续检查的新状态
             if st.get("change_seq") == seq:
                 st["last_change_notify"] = prev_lcn
+                st["change_pending"] = False
 
         def commit_change():
+            if st.get("change_seq") == seq:
+                st["change_pending"] = False
             db.mark_changes_notified(d["id"], last_id)
 
         pending.append((

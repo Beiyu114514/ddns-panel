@@ -22,6 +22,9 @@
   --danger: #cf222e;
   --danger-soft: #ffebe9;
   --danger-border: #ff8182;
+  --danger-solid: #cf222e;       /* 危险按钮底色，白字 5.4:1 */
+  --danger-solid-hover: #a40e26;
+  --on-danger: #ffffff;
   --warn: #9a6700;
   --warn-soft: #fff8c5;
   --warn-border: #d4a72c;
@@ -64,6 +67,9 @@
     --danger: #f85149;
     --danger-soft: #2d1214;
     --danger-border: #da3633;
+    --danger-solid: #da3633;     /* 白字 4.6:1；亮红 --danger 配白字只有 3.35:1 */
+    --danger-solid-hover: #b62324;
+    --on-danger: #ffffff;
     --warn: #d29922;
     --warn-soft: #272115;
     --warn-border: #9e6a03;
@@ -357,11 +363,15 @@ button.link {
 .btn.sm { min-height: 32px; padding: 4px 10px; font-size: .85rem; border-radius: 7px; }
 .btn.wide { width: 100%; }
 .btn.danger-solid {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: #ffffff;
+  background: var(--danger-solid);
+  border-color: var(--danger-solid);
+  color: var(--on-danger);
 }
-.btn.danger-solid:hover { filter: brightness(.92); color: #fff; }
+.btn.danger-solid:hover {
+  background: var(--danger-solid-hover);
+  border-color: var(--danger-solid-hover);
+  color: var(--on-danger);
+}
 .btn.disabled,
 .btn:disabled {
   opacity: .55;
@@ -478,7 +488,8 @@ button.link {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-.chart-scroll { overflow-x: auto; padding-bottom: 4px; }
+/* padding 给 SVG 的 3px 焦点环（offset 4px）留出空间，否则会被 overflow 裁掉 */
+.chart-scroll { overflow-x: auto; padding: 8px; }
 .chart-svg {
   display: block;
   width: 100%;

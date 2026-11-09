@@ -122,12 +122,31 @@ function readPassword() {
 }
 
 async function login(page, base, password) {
-  await page.goto(`${base}/login`, { waitUntil: 'domcontentloaded' });
-  await page.fill('input[name="password"]', password);
-  await Promise.all([
-    page.waitForURL((url) => url.pathname === '/', { timeout: 10000 }),
-    page.click('button[type="submit"]'),
-  ]);
+  // 会话 cookie 带 Secure，本地 http 门禁里浏览器不会保存它。
+  // 先用 fetch 拿到 Set-Cookie，再以非 Secure 方式注入当前测试上下文；
+  // 这只影响本地视觉门禁，生产仍由浏览器按 Secure 规则处理。
+  const resp = await fetch(`${base}/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ password }).toString(),
+    redirect: 'manual',
+  });
+  const raw = resp.headers.getSetCookie
+    ? resp.headers.getSetCookie()
+    : [resp.headers.get('set-cookie')].filter(Boolean);
+  const session = raw.map((c) => c.split(';')[0])
+    .find((c) => c.startsWith('ddns_session='));
+  if (!session) throw new Error('登录失败：未获取到会话 cookie');
+  const eq = session.indexOf('=');
+  await page.context().addCookies([{
+    name: session.slice(0, eq),
+    value: session.slice(eq + 1),
+    url: base,
+    httpOnly: true,
+    secure: false,
+    sameSite: 'Lax',
+  }]);
+  await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' });
 }
 
 async function focusWithTab(page, selector, maxTabs = 100) {
@@ -157,6 +176,47 @@ async function checkFocusRing(page, selector) {
     ok(`${selector} 焦点环 ${ring.width}px ${ring.style} ${ring.color}`);
   } else {
     fail(`${selector} 焦点环不足：${JSON.stringify(ring)}`);
+  }
+
+  // 计算样式有 outline 不代表看得见：祖先 overflow 容器可能把环裁掉
+  const clip = await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return { clipped: false };
+    const cs = getComputedStyle(el);
+    const pad = (parseFloat(cs.outlineWidth) || 0) + (parseFloat(cs.outlineOffset) || 0);
+    const r = el.getBoundingClientRect();
+    let node = el.parentElement;
+    while (node && node !== document.documentElement) {
+      const s = getComputedStyle(node);
+      const clipsX = s.overflowX !== 'visible';
+      const clipsY = s.overflowY !== 'visible';
+      if (clipsX || clipsY) {
+        const nr = node.getBoundingClientRect();
+        const top = nr.top + node.clientTop;
+        const left = nr.left + node.clientLeft;
+        const bottom = top + node.clientHeight;
+        const right = left + node.clientWidth;
+        // 可滚动方向上的边缘本来就可能滚出视口，只检查不可滚动方向
+        const checkX = clipsX && node.scrollWidth <= node.clientWidth + 1;
+        const checkY = clipsY && node.scrollHeight <= node.clientHeight + 1;
+        const edges = {
+          top: checkY && r.top - pad < top,
+          bottom: checkY && r.bottom + pad > bottom,
+          left: checkX && r.left - pad < left,
+          right: checkX && r.right + pad > right,
+        };
+        if (edges.top || edges.bottom || edges.left || edges.right) {
+          return { clipped: true, node: node.className || node.tagName, edges };
+        }
+      }
+      node = node.parentElement;
+    }
+    return { clipped: false };
+  }, selector);
+  if (clip.clipped) {
+    fail(`${selector} 焦点环被 ${clip.node} 裁切：${JSON.stringify(clip.edges)}`);
+  } else {
+    ok(`${selector} 焦点环未被裁切`);
   }
 }
 

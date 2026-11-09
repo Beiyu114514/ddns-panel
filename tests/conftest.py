@@ -25,8 +25,9 @@ def client():
     from fastapi.testclient import TestClient
     from app.main import app
 
-    # 不进入 with 上下文：跳过 lifespan，测试里不启动后台解析器/清理任务
-    return TestClient(app)
+    # 不进入 with 上下文：跳过 lifespan，测试里不启动后台解析器/清理任务。
+    # 会话 cookie 带 Secure，测试客户端必须走 https 才会回传它。
+    return TestClient(app, base_url="https://testserver")
 
 
 @pytest.fixture

@@ -219,6 +219,9 @@
       {% for sec, label in INTERVAL_OPTIONS %}
       <option value="{{ sec }}" {% if d.interval_sec == sec %}selected{% endif %}>{{ label }}</option>
       {% endfor %}
+      {% if interval_custom %}
+      <option value="{{ interval_custom }}" selected>{{ interval_custom }} 秒（当前）</option>
+      {% endif %}
     </select>
 
     <label for="note">备注（可选）</label>
