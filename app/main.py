@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
     await monitor.start()
     cleanup = asyncio.create_task(_cleanup_loop())
     yield
-    monitor.stop()
+    await monitor.stop()
     cleanup.cancel()
 
 
@@ -133,6 +133,20 @@ def _client_ip(request: Request) -> str:
     return chain[idx]
 
 
+def _rate_limit_key(ip: str) -> str:
+    # IPv6 按 /64 聚合：同一用户可随意轮换后缀，不聚合的话失败计数会被
+    # 拆成无数条记录，既绕过阈值又撑爆 LOGIN_FAILS
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if addr.version == 6:
+        if addr.ipv4_mapped:
+            return str(addr.ipv4_mapped)
+        return f"{ipaddress.ip_network((addr, 64), strict=False).network_address}/64"
+    return str(addr)
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     p = request.url.path
@@ -154,15 +168,23 @@ def _prune_login_fails(now: int):
     for k in [k for k, (_, lock, seen) in LOGIN_FAILS.items()
               if lock and lock <= now and now - seen > 3600]:
         del LOGIN_FAILS[k]
-    # 仍超限时按最后活动时间淘汰最旧条目，保证大量来源 IP 不会让字典无界增长。
-    # 一次多淘汰一些，避免持续攻击下每次登录都做一次全量排序
+    excess = len(LOGIN_FAILS) - LOGIN_FAILS_MAX
+    if excess <= 0:
+        return
+    # 只淘汰超出上限的数量，且先淘汰最久未活动的未锁定/已过期条目。
+    # 不能一次多删（旧实现每次至少删 1024 条）：那会成批清零部分失败计数，
+    # 未锁定条目不够时还会删掉仍在生效的锁定，等于替攻击者解锁。
+    for k in heapq.nsmallest(
+            excess,
+            (k for k, (_, lock, _) in LOGIN_FAILS.items() if lock <= now),
+            key=lambda k: LOGIN_FAILS[k][2]):
+        del LOGIN_FAILS[k]
     excess = len(LOGIN_FAILS) - LOGIN_FAILS_MAX
     if excess > 0:
-        drop = max(excess, LOGIN_FAILS_MAX // 8)
-        # 优先淘汰未锁定条目，尽量保住仍在生效的锁定
+        # 极端情况下剩余条目全部在锁定中：只牺牲最少量的、最早到期的锁定，
+        # 保证字典有界；正常情况不会走到这里
         for k in heapq.nsmallest(
-                drop, LOGIN_FAILS,
-                key=lambda k: (LOGIN_FAILS[k][1] > now, LOGIN_FAILS[k][2])):
+                excess, LOGIN_FAILS, key=lambda k: LOGIN_FAILS[k][1]):
             del LOGIN_FAILS[k]
 
 
@@ -177,7 +199,7 @@ async def login_page(request: Request):
 async def login(request: Request):
     form = await request.form()
     pw = str(form.get("password", ""))
-    ip = _client_ip(request)
+    ip = _rate_limit_key(_client_ip(request))
     now = int(time.time())
     _prune_login_fails(now)
     fails, lock, seen = LOGIN_FAILS.get(ip, (0, 0, 0))

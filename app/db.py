@@ -3,6 +3,7 @@ import hmac
 import os
 import secrets
 import sqlite3
+import stat
 import time
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,7 +43,8 @@ CREATE TABLE IF NOT EXISTS changes (
   domain_id INTEGER NOT NULL,
   ts        INTEGER NOT NULL,
   old_ip    TEXT,
-  new_ip    TEXT
+  new_ip    TEXT,
+  notified  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_changes_dom_ts ON changes (domain_id, ts);
 CREATE INDEX IF NOT EXISTS idx_changes_reset ON changes (domain_id, ts DESC, id DESC)
@@ -65,6 +67,7 @@ def init():
     c = conn()
     c.executescript(SCHEMA)
     c.commit()
+    _migrate(c)
     if not get_setting("auth_secret"):
         set_setting("auth_secret", secrets.token_hex(32))
     if not get_setting("password_hash"):
@@ -72,12 +75,40 @@ def init():
         path = os.path.join(DATA_DIR, "initial_password.txt")
         # 先落盘再提交 hash：文件写失败时不能留下"有 hash 但没有密码文件"的状态，
         # 否则重启后不会再生成初始密码，管理员将永久无法登录
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(pw + "\n")
-        os.chmod(path, 0o600)  # 已存在文件也要收紧权限
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK,
+            0o600,
+        )
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(f"{path} 不是普通文件")
+            # mode 只对新建文件生效：已存在的文件要在写入前收紧，
+            # 否则写入到 chmod 之间会有一个可读窗口
+            os.fchmod(fd, 0o600)
+            f = os.fdopen(fd, "w")
+            fd = -1  # fdopen 接管 fd 后不能再重复关闭
+            with f:
+                f.write(pw + "\n")
+                f.flush()
+                # 先把密码文件刷到磁盘，再提交 hash：断电后不能出现
+                # "DB 已有 hash、密码文件为空"的永久锁死状态
+                os.fsync(f.fileno())
+        except Exception:
+            if fd >= 0:
+                os.close(fd)
+            raise
         set_setting("password_hash", hash_password(pw))
         print(f"[setup] 初始密码: {pw} （已写入 {path}，登录后请修改）", flush=True)
+
+
+def _migrate(c: sqlite3.Connection):
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(changes)")}
+    if "notified" not in cols:
+        # 旧库里的历史变动无法判断是否已通知：一律视为已通知，
+        # 避免升级后把几个月前的变动当成待发消息补发
+        c.execute("ALTER TABLE changes ADD COLUMN notified INTEGER NOT NULL DEFAULT 1")
+        c.commit()
 
 
 def get_setting(key: str, default=None):
@@ -158,8 +189,14 @@ def update_domain(domain_id: int, reset_marker: bool = False, **kw):
         c.execute(f"UPDATE domains SET {fields} WHERE id = ?", (*kw.values(), domain_id))
         if reset_marker:
             c.execute(
-                "INSERT INTO changes (domain_id, ts, old_ip, new_ip) VALUES (?, ?, NULL, NULL)",
+                "INSERT INTO changes (domain_id, ts, old_ip, new_ip, notified) "
+                "VALUES (?, ?, NULL, NULL, 1)",
                 (domain_id, int(time.time())),
+            )
+            # 记录类型切换后，旧类型的未通知变动不能再发出去
+            c.execute(
+                "UPDATE changes SET notified = 1 WHERE domain_id = ? AND notified = 0",
+                (domain_id,),
             )
         c.commit()
     except Exception:
@@ -229,16 +266,52 @@ def cleanup_checks(days: int):
 
 # ---------- changes ----------
 
-def add_change(domain_id: int, old_ip, new_ip):
-    conn().execute(
-        "INSERT INTO changes (domain_id, ts, old_ip, new_ip) VALUES (?, ?, ?, ?)",
-        (domain_id, int(time.time()), old_ip, new_ip),
+def add_change(domain_id: int, old_ip, new_ip, notify: bool = True) -> int:
+    # notify=0 表示这条变动还没有成功通知，进程重启后仍可补发；
+    # 建立基线（old_ip 为空）和重置 marker 不算需要通知的变动。
+    cur = conn().execute(
+        "INSERT INTO changes (domain_id, ts, old_ip, new_ip, notified) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (domain_id, int(time.time()), old_ip, new_ip, 0 if notify else 1),
     )
+    conn().commit()
+    return cur.lastrowid
+
+
+def pending_change(domain_id: int):
+    """该域名最早一条未通知变动：返回 (旧 IP, 最新 IP, 起始时间, 最后一条记录 id)。
+
+    连续多次变动合并成一条通知（最早的旧 IP → 最新的新 IP），
+    避免重启或发送失败后通知里的"旧 IP"变成用户从未见过的中间值。
+    """
+    rows = conn().execute(
+        "SELECT id, ts, old_ip, new_ip FROM changes "
+        "WHERE domain_id = ? AND notified = 0 AND new_ip IS NOT NULL "
+        "ORDER BY ts ASC, id ASC",
+        (domain_id,),
+    ).fetchall()
+    if not rows:
+        return None
+    return rows[0]["old_ip"], rows[-1]["new_ip"], rows[0]["ts"], rows[-1]["id"]
+
+
+def mark_changes_notified(domain_id: int, up_to_id: int | None = None):
+    if up_to_id is None:
+        conn().execute(
+            "UPDATE changes SET notified = 1 WHERE domain_id = ? AND notified = 0",
+            (domain_id,),
+        )
+    else:
+        conn().execute(
+            "UPDATE changes SET notified = 1 "
+            "WHERE domain_id = ? AND notified = 0 AND id <= ?",
+            (domain_id, up_to_id),
+        )
     conn().commit()
 
 
 def reset_baseline(domain_id: int):
-    add_change(domain_id, None, None)
+    add_change(domain_id, None, None, notify=False)
 
 
 def last_reset(domain_id: int):

@@ -61,17 +61,18 @@ class Monitor:
         self.sup = asyncio.create_task(self._supervisor())
         self.sender = asyncio.create_task(self._sender())
 
-    def stop(self):
-        if self.sup:
-            self.sup.cancel()
-        for t in self.tasks.values():
+    async def stop(self):
+        tasks = [t for t in (self.sup, self.sender) if t is not None]
+        tasks.extend(self.tasks.values())
+        for t in tasks:
             t.cancel()
-        if self.sender:
-            self.sender.cancel()
-        # 未发出的通知回滚状态，避免停止过程中状态与事实不一致
+        # 必须等被取消的任务真正退出：发送中的消息要靠 CancelledError 分支
+        # 回滚状态，只 cancel 不 await 的话事件循环可能先关掉
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # 队列里还没开始发送的消息：回滚状态，重启后由 DB 中的未通知记录补发
         while not self.send_q.empty():
-            _, _, rollback = self.send_q.get_nowait()
-            rollback()
+            item = self.send_q.get_nowait()
+            item[2]()
 
     async def _supervisor(self):
         while True:
@@ -169,7 +170,7 @@ class Monitor:
 
     async def _sender(self):
         while True:
-            text, kind, rollback = await self.send_q.get()
+            text, kind, rollback, commit = await self.send_q.get()
             try:
                 ok = await self._send(text, kind=kind)
             except asyncio.CancelledError:
@@ -179,10 +180,17 @@ class Monitor:
             except Exception as e:
                 print(f"[notify] 发送异常: {e}", flush=True)
                 ok = False
-            if not ok:
+            if ok:
+                if commit is not None:
+                    try:
+                        commit()
+                    except Exception as e:
+                        # 已送达但落库失败：宁可下次重复通知，也不能丢掉
+                        print(f"[notify] 通知状态落库失败: {e}", flush=True)
+            else:
                 rollback()
 
-    async def _handle(self, d, res) -> list[tuple[str, str, callable]]:
+    async def _handle(self, d, res) -> list[tuple]:
         """更新状态并返回待发送的消息。
 
         发送由后台队列执行。状态在入队时即推进，这样 Telegram 不可达时
@@ -191,44 +199,18 @@ class Monitor:
         被总开关/分类开关关闭时不推进状态，避免"从未发出的告警被当作已通知"。
         """
         now = int(time.time())
-        pending: list[tuple[str, str, callable]] = []
+        pending: list[tuple] = []
         st = self.fail_state.setdefault(
-            d["id"], {"fails": 0, "alerted": False, "last_alert": 0, "last_try": 0})
-        st["last_try"] = now
+            d["id"], {"fails": 0, "alerted": False, "last_alert": 0})
         if res["status"] == "ok":
             st["fails"] = 0
             prev = db.current_ip(d["id"])
             if prev != res["ip"]:
-                db.add_change(d["id"], prev, res["ip"])
+                # prev 为空表示首次建立基线，不需要通知；其余变动以 notified=0
+                # 落库，进程重启后仍能从这里补发
+                db.add_change(d["id"], prev, res["ip"], notify=prev is not None)
                 print(f"[change] {d['name']}: {prev} -> {res['ip']}", flush=True)
-                if prev is not None:
-                    if self._deliverable("change"):
-                        # 未送达的变动留待下次检查重试；新变动覆盖旧的中转记录
-                        st["pending_change"] = (prev, res["ip"], now)
-                    else:
-                        st.pop("pending_change", None)
-            pend = st.get("pending_change")
-            if pend and self._deliverable("change") and \
-                    now - st.get("last_change_notify", 0) >= \
-                    self._tg_conf()["change_cooldown_min"] * 60:
-                p_old, p_new, p_ts = pend
-                prev_lcn = st.get("last_change_notify", 0)
-                st["last_change_notify"] = now
-                st.pop("pending_change", None)
-                st["change_seq"] = st.get("change_seq", 0) + 1
-                seq = st["change_seq"]
-
-                def rollback_change():
-                    # 只在状态仍属于本条消息时回滚，避免覆盖后续检查的新状态
-                    if st.get("change_seq") == seq:
-                        st["last_change_notify"] = prev_lcn
-                        if st.get("pending_change") is None:
-                            st["pending_change"] = pend
-
-                pending.append((
-                    f"DDNS 解析变动\n域名: {d['name']} ({d['rrtype']})\n"
-                    f"时间: {fmt_short(p_ts)}\n旧 IP: {p_old}\n新 IP: {p_new}",
-                    "change", rollback_change))
+            self._queue_change(d, st, now, pending)
             if st["alerted"] and self._deliverable("recover"):
                 # 通知关闭时不能清 alerted：否则恢复事件被吞掉，重新开启后无法补发
                 st["alerted"] = False
@@ -239,8 +221,10 @@ class Monitor:
 
                 pending.append((
                     f"解析恢复正常\n域名: {d['name']} ({d['rrtype']})\n当前 IP: {res['ip']}",
-                    "recover", rollback_recover))
+                    "recover", rollback_recover, None))
         else:
+            # 变动是已经发生的事实，不应被当前解析失败阻塞；先补发再判断告警
+            self._queue_change(d, st, now, pending)
             st["fails"] += 1
             if st["fails"] >= FAIL_THRESHOLD and self._deliverable("fail"):
                 if not st["alerted"] or now - st["last_alert"] >= \
@@ -257,8 +241,43 @@ class Monitor:
                     pending.append((
                         f"解析持续失败\n域名: {d['name']} ({d['rrtype']})\n"
                         f"错误: {res['error'] or res['status']}\n已连续失败 {st['fails']} 次",
-                        "fail", rollback_fail))
+                        "fail", rollback_fail, None))
         return pending
+
+    def _queue_change(self, d, st, now: int, pending: list[tuple]):
+        """把 DB 里未通知的变动合并成一条消息入队。
+
+        以 DB 为准而不是内存：进程重启后 notified=0 的记录仍然有效；
+        连续变动合并为"最早的旧 IP → 最新的新 IP"，不会把中间 IP 当成旧值。
+        """
+        pend = db.pending_change(d["id"])
+        if not pend:
+            return
+        if not self._deliverable("change"):
+            # 关闭期间不积压，否则重新开启后会补发很久以前的变动
+            db.mark_changes_notified(d["id"])
+            return
+        if now - st.get("last_change_notify", 0) < \
+                self._tg_conf()["change_cooldown_min"] * 60:
+            return
+        p_old, p_new, p_ts, last_id = pend
+        prev_lcn = st.get("last_change_notify", 0)
+        st["last_change_notify"] = now
+        st["change_seq"] = st.get("change_seq", 0) + 1
+        seq = st["change_seq"]
+
+        def rollback_change():
+            # 只在状态仍属于本条消息时回滚，避免覆盖后续检查的新状态
+            if st.get("change_seq") == seq:
+                st["last_change_notify"] = prev_lcn
+
+        def commit_change():
+            db.mark_changes_notified(d["id"], last_id)
+
+        pending.append((
+            f"DDNS 解析变动\n域名: {d['name']} ({d['rrtype']})\n"
+            f"时间: {fmt_short(p_ts)}\n旧 IP: {p_old}\n新 IP: {p_new}",
+            "change", rollback_change, commit_change))
 
     @staticmethod
     def _deliverable(kind: str) -> bool:
@@ -289,9 +308,9 @@ class Monitor:
 
     async def _send(self, text: str, kind: str = "") -> bool:
         """返回是否已发出。入队后配置被关闭时按未发送处理并回滚状态。"""
-        conf = self._tg_conf()
-        if not (conf["on"] and conf["token"] and conf["chat"]):
+        if not self._deliverable(kind):
             return False
+        conf = self._tg_conf()
         ok, info = await send_tg(conf["token"], conf["chat"], text)
         if not ok:
             print(f"[notify] Telegram 发送失败: {info}", flush=True)
