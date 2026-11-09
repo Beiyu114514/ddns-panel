@@ -58,6 +58,9 @@
       {% endfor %}
     </div>
   </div>
+  {% if agg_label %}
+  <p class="hint">该窗口内共 {{ window_count }} 次变动，已按 {{ agg_label }}聚合显示；精确时间见下方变动记录。</p>
+  {% endif %}
   {% if segs %}
   <div class="track">
     {% for s in segs %}
@@ -65,10 +68,10 @@
     {% endfor %}
   </div>
   <ul class="legend">
-    {% for ip, dur in legend %}
-    <li><span class="swatch" style="background:{{ ip_color(ip) }}"></span>
-        <code class="ip">{{ ip }}</code>
-        <span class="muted">{{ dur|fmt_dur }}（约 {{ dur_pct[ip] }}%）</span></li>
+    {% for item in legend %}
+    <li><span class="swatch{% if item.other %} other{% endif %}"{% if not item.other %} style="background:{{ ip_color(item.label) }}"{% endif %}></span>
+        <code class="ip">{{ item.label }}</code>
+        <span class="muted">{{ item.dur|fmt_dur }}（约 {{ item.pct }}%）</span></li>
     {% endfor %}
   </ul>
   {% else %}
@@ -76,8 +79,11 @@
   {% endif %}
 </div>
 
-<div class="card">
-  <h2>变动记录</h2>
+<div class="card" id="changes">
+  <div class="card-head">
+    <h2>变动记录</h2>
+    <span class="muted">共 {{ changes_total }} 条</span>
+  </div>
   {% if changes %}
   <div class="table-wrap"><table>
     <thead><tr><th>时间</th><th>旧 IP</th><th>新 IP</th></tr></thead>
@@ -92,6 +98,17 @@
     </tbody>
   </table></div>
   {% else %}<div class="empty">暂无变动记录。</div>{% endif %}
+  {% if pages > 1 %}
+  <div class="pager">
+    {% if page > 1 %}
+    <a class="btn ghost sm" href="/domain/{{ d.id }}?days={{ days }}&page={{ page - 1 }}#changes">上一页</a>
+    {% endif %}
+    <span class="muted">第 {{ page }} / {{ pages }} 页</span>
+    {% if page < pages %}
+    <a class="btn ghost sm" href="/domain/{{ d.id }}?days={{ days }}&page={{ page + 1 }}#changes">下一页</a>
+    {% endif %}
+  </div>
+  {% endif %}
 </div>
 
 <div class="card">

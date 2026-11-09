@@ -362,12 +362,50 @@ def count_changes(domain_id: int) -> int:
     ).fetchone()["n"]
 
 
-def changes_since(domain_id: int, since: int):
-    return conn().execute(
-        "SELECT * FROM changes WHERE domain_id = ? AND ts >= ? AND new_ip IS NOT NULL "
-        "ORDER BY ts ASC, id ASC",
-        (domain_id, since),
-    ).fetchall()
+def count_changes_window(domain_id: int, since: int, after_id: int | None = None) -> int:
+    """窗口内可绘制的时间线变动数。after_id 非空时按 (ts,id) 复合边界排除重置前记录。"""
+    if after_id is None:
+        row = conn().execute(
+            "SELECT COUNT(*) AS n FROM changes WHERE domain_id = ? AND ts >= ? "
+            "AND new_ip IS NOT NULL",
+            (domain_id, since),
+        ).fetchone()
+    else:
+        row = conn().execute(
+            "SELECT COUNT(*) AS n FROM changes WHERE domain_id = ? "
+            "AND (ts > ? OR (ts = ? AND id > ?)) AND new_ip IS NOT NULL",
+            (domain_id, since, since, after_id),
+        ).fetchone()
+    return row["n"]
+
+
+def changes_window(domain_id: int, since: int, after_id: int | None = None,
+                   bucket: int | None = None):
+    """按时间窗口取变动；bucket 非空时每个时间桶只取最后一条，限制绘制段数。"""
+    if after_id is None:
+        where = "domain_id = ? AND ts >= ?"
+        params = [domain_id, since]
+    else:
+        where = "domain_id = ? AND (ts > ? OR (ts = ? AND id > ?))"
+        params = [domain_id, since, since, after_id]
+    if bucket:
+        # 窗口内变动过密时按时间桶取样，避免把全部记录都变成时间线节点。
+        # 取每桶最后一条（ts,id 最大）而不是第一条，保证相邻桶的 IP 是递增后的状态。
+        sql = (
+            "SELECT id, ts, new_ip FROM ("
+            "SELECT id, ts, new_ip, ROW_NUMBER() OVER ("
+            "PARTITION BY CAST((ts - ?) / ? AS INTEGER) "
+            "ORDER BY ts DESC, id DESC) AS rn "
+            f"FROM changes WHERE {where} AND new_ip IS NOT NULL"
+            ") WHERE rn = 1 ORDER BY ts ASC, id ASC"
+        )
+        params = [since, bucket, *params]
+    else:
+        sql = (
+            f"SELECT id, ts, new_ip FROM changes WHERE {where} "
+            "AND new_ip IS NOT NULL ORDER BY ts ASC, id ASC"
+        )
+    return conn().execute(sql, params).fetchall()
 
 
 def changes_count_since(since: int) -> int:
@@ -404,18 +442,17 @@ def last_change_before(domain_id: int, ts: int):
     ).fetchone()
 
 
-def changes_after(domain_id: int, ts: int, after_id: int):
-    # (ts, id) 复合边界：同一秒内的重置前记录不会被误当作重置后的记录
-    return conn().execute(
-        "SELECT * FROM changes WHERE domain_id = ? AND (ts > ? OR (ts = ? AND id > ?)) "
-        "AND new_ip IS NOT NULL ORDER BY ts ASC, id ASC",
-        (domain_id, ts, ts, after_id),
-    ).fetchall()
-
-
-def changes_list(domain_id: int, limit: int = 200):
+def changes_list(domain_id: int, limit: int = 200, offset: int = 0):
     # 保留 marker 行，让"基线重置"在变动记录中可审计
     return conn().execute(
-        "SELECT * FROM changes WHERE domain_id = ? ORDER BY ts DESC, id DESC LIMIT ?",
-        (domain_id, limit),
+        "SELECT * FROM changes WHERE domain_id = ? ORDER BY ts DESC, id DESC "
+        "LIMIT ? OFFSET ?",
+        (domain_id, limit, offset),
     ).fetchall()
+
+
+def count_change_rows(domain_id: int) -> int:
+    # 分页总数包含 marker 行，和表格里实际展示的行数一致
+    return conn().execute(
+        "SELECT COUNT(*) AS n FROM changes WHERE domain_id = ?", (domain_id,)
+    ).fetchone()["n"]

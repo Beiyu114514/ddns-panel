@@ -25,6 +25,9 @@ from .util import fmt_dur, fmt_ago, fmt_short, fmt_ts, ip_color, is_cloudflare, 
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 COOKIE = "ddns_session"
+CHANGES_PAGE_SIZE = 20
+TIMELINE_MAX_SEGMENTS = 240
+TIMELINE_LEGEND_MAX = 8
 
 monitor = Monitor()
 
@@ -442,7 +445,7 @@ async def domain_create(request: Request):
 
 
 @app.get("/domain/{domain_id}")
-async def domain_detail(request: Request, domain_id: int, days: int = 30):
+async def domain_detail(request: Request, domain_id: int, days: int = 30, page: int = 1):
     d = db.get_domain(domain_id)
     if not d:
         return RedirectResponse("/?err=" + quote("监控项不存在"), 303)
@@ -452,19 +455,43 @@ async def domain_detail(request: Request, domain_id: int, days: int = 30):
     start = now - days * 86400
     total = max(1, now - start)
 
-    segs_raw = []
     # 基线重置后旧历史作废：以 marker 的 (ts,id) 作复合边界，重置后只取更晚的记录，
     # 同一秒内先于 marker 的旧记录不会被误当作重置后的基线
     marker = db.last_reset(domain_id)
     if marker and marker["ts"] >= start:
-        for c in db.changes_after(domain_id, marker["ts"], marker["id"]):
-            segs_raw.append([c["ts"], None, c["new_ip"]])
+        window_since, window_after_id = marker["ts"], marker["id"]
+        window_count = db.count_changes_window(domain_id, window_since, window_after_id)
+        baseline = None
     else:
+        window_since, window_after_id = start, None
+        window_count = db.count_changes_window(domain_id, window_since)
         before = db.last_change_before(domain_id, start)
-        if before and before["new_ip"] is not None:
-            segs_raw.append([start, None, before["new_ip"]])
-        for c in db.changes_since(domain_id, start):
-            segs_raw.append([c["ts"], None, c["new_ip"]])
+        baseline = before["new_ip"] if before and before["new_ip"] is not None else None
+
+    # 变动过密时按时间桶取样：桶宽随有效窗口自动放大，保证最多约 240 段。
+    agg_bucket = None
+    agg_label = None
+    if window_count > TIMELINE_MAX_SEGMENTS:
+        span = max(1, now - window_since)
+        if span >= 86400:
+            unit = 3600
+        elif span >= 3600:
+            unit = 60
+        else:
+            unit = 1
+        agg_bucket = max(unit, math.ceil(span / TIMELINE_MAX_SEGMENTS / unit) * unit)
+        if agg_bucket >= 3600:
+            agg_label = f"{agg_bucket // 3600} 小时"
+        elif agg_bucket >= 60:
+            agg_label = f"{agg_bucket // 60} 分钟"
+        else:
+            agg_label = f"{agg_bucket} 秒"
+
+    segs_raw = []
+    if baseline is not None:
+        segs_raw.append([start, None, baseline])
+    for c in db.changes_window(domain_id, window_since, window_after_id, bucket=agg_bucket):
+        segs_raw.append([c["ts"], None, c["new_ip"]])
     for i, s in enumerate(segs_raw):
         s[1] = segs_raw[i + 1][0] if i + 1 < len(segs_raw) else now
 
@@ -482,7 +509,23 @@ async def domain_detail(request: Request, domain_id: int, days: int = 30):
         legend[ip] = legend.get(ip, 0) + dur
     segs.sort(key=lambda x: x["left"])
     legend_items = sorted(legend.items(), key=lambda kv: -kv[1])
-    dur_pct = {ip: round(dur / total * 100) for ip, dur in legend.items()}
+    legend_rows = [
+        {"label": ip, "dur": dur, "pct": round(dur / total * 100), "other": False}
+        for ip, dur in legend_items[:TIMELINE_LEGEND_MAX]
+    ]
+    rest = legend_items[TIMELINE_LEGEND_MAX:]
+    if rest:
+        rest_dur = sum(dur for _, dur in rest)
+        legend_rows.append({
+            "label": f"其他 {len(rest)} 个 IP",
+            "dur": rest_dur,
+            "pct": round(rest_dur / total * 100),
+            "other": True,
+        })
+
+    changes_total = db.count_change_rows(domain_id)
+    pages = max(1, (changes_total + CHANGES_PAGE_SIZE - 1) // CHANGES_PAGE_SIZE)
+    page = max(1, min(page, pages))
 
     cur = db.current_ip(domain_id)
     return templates.TemplateResponse(request, "domain.html", {
@@ -495,9 +538,15 @@ async def domain_detail(request: Request, domain_id: int, days: int = 30):
         "total_changes": db.count_changes(domain_id),
         "days": days,
         "segs": segs,
-        "legend": legend_items,
-        "dur_pct": dur_pct,
-        "changes": db.changes_list(domain_id),
+        "legend": legend_rows,
+        "agg_label": agg_label,
+        "window_count": window_count,
+        "changes": db.changes_list(
+            domain_id, CHANGES_PAGE_SIZE, (page - 1) * CHANGES_PAGE_SIZE),
+        "changes_total": changes_total,
+        "page": page,
+        "pages": pages,
+        "page_size": CHANGES_PAGE_SIZE,
         "checks": db.recent_checks(domain_id, 20),
     })
 

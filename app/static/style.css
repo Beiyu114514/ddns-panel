@@ -102,6 +102,8 @@ code.ip.big{font-size:18px}
 .seg{position:absolute;top:0;bottom:0}
 .legend{list-style:none;padding:0;margin:12px 0 0;display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px}
 .legend .swatch{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px}
+.legend .swatch.other{background:var(--muted)}
+.pager{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:12px}
 .muted{color:var(--muted)}
 .empty{color:var(--muted);padding:26px;text-align:center}
 .danger-zone{display:flex;justify-content:flex-end;margin-top:4px}
