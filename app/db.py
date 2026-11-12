@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS checks (
   error     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_checks_dom_ts ON checks (domain_id, ts);
+CREATE TABLE IF NOT EXISTS check_hourly (
+  domain_id INTEGER NOT NULL,
+  hour_ts   INTEGER NOT NULL,
+  total     INTEGER NOT NULL,
+  fail      INTEGER NOT NULL,
+  PRIMARY KEY (domain_id, hour_ts)
+);
+CREATE INDEX IF NOT EXISTS idx_check_hourly_ts ON check_hourly (hour_ts);
 CREATE TABLE IF NOT EXISTS changes (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   domain_id INTEGER NOT NULL,
@@ -101,6 +109,7 @@ def init():
     c.executescript(SCHEMA)
     c.commit()
     _migrate(c)
+    _migrate_check_hourly(c)
     if not get_setting("auth_secret"):
         set_setting("auth_secret", secrets.token_hex(32))
     if not get_setting("password_hash"):
@@ -143,6 +152,23 @@ def _migrate(c: sqlite3.Connection):
         # 避免升级后把几个月前的变动当成待发消息补发
         c.execute("ALTER TABLE changes ADD COLUMN notified INTEGER NOT NULL DEFAULT 1")
         c.commit()
+
+
+def _migrate_check_hourly(c: sqlite3.Connection):
+    if get_setting("check_hourly_backfilled") == "1":
+        return
+    # 汇总回填与标记放在同一事务里：中断时两者一起回滚，重启可安全重试。
+    c.execute(
+        "INSERT OR IGNORE INTO check_hourly (domain_id, hour_ts, total, fail) "
+        "SELECT domain_id, ts - (ts % 3600), COUNT(*), "
+        "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) "
+        "FROM checks GROUP BY domain_id, ts - (ts % 3600)"
+    )
+    c.execute(
+        "INSERT INTO settings (key, value) VALUES ('check_hourly_backfilled', '1') "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    )
+    c.commit()
 
 
 def get_setting(key: str, default=None):
@@ -242,18 +268,27 @@ def delete_domain(domain_id: int):
     c = conn()
     c.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
     c.execute("DELETE FROM checks WHERE domain_id = ?", (domain_id,))
+    c.execute("DELETE FROM check_hourly WHERE domain_id = ?", (domain_id,))
     c.execute("DELETE FROM changes WHERE domain_id = ?", (domain_id,))
     c.commit()
 
 
 # ---------- checks ----------
 
-def add_check(domain_id: int, status: str, ip, rtt_ms, error=None):
-    conn().execute(
+def add_check(domain_id: int, status: str, ip, rtt_ms, error=None, ts: int | None = None):
+    c = conn()
+    ts = int(time.time()) if ts is None else int(ts)
+    c.execute(
         "INSERT INTO checks (domain_id, ts, status, ip, rtt_ms, error) VALUES (?, ?, ?, ?, ?, ?)",
-        (domain_id, int(time.time()), status, ip, rtt_ms, error),
+        (domain_id, ts, status, ip, rtt_ms, error),
     )
-    conn().commit()
+    c.execute(
+        "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) VALUES (?, ?, 1, ?) "
+        "ON CONFLICT(domain_id, hour_ts) DO UPDATE SET "
+        "total = total + 1, fail = fail + excluded.fail",
+        (domain_id, ts - (ts % 3600), int(status != "ok")),
+    )
+    c.commit()
 
 
 def last_check(domain_id: int):
@@ -285,11 +320,10 @@ def global_last_bad_check():
 
 def check_stats_since(since: int):
     return conn().execute(
-        "SELECT COUNT(*) AS total, "
-        "SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok, "
-        "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) AS fail "
-        "FROM checks WHERE ts >= ?",
-        (since,),
+        "SELECT COALESCE(SUM(total), 0) AS total, "
+        "COALESCE(SUM(total - fail), 0) AS ok, COALESCE(SUM(fail), 0) AS fail "
+        "FROM check_hourly WHERE hour_ts >= ?",
+        (since - (since % 3600),),
     ).fetchone()
 
 
@@ -297,9 +331,8 @@ def chart_counts(since: int, hours: int):
     """按图表小时桶聚合，避免将窗口内的检查明细全部传到 Python。"""
     c = conn()
     checks = c.execute(
-        "SELECT CAST((ts - ?) / 3600 AS INTEGER) AS bucket, COUNT(*) AS total, "
-        "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) AS fail "
-        "FROM checks WHERE ts >= ? AND ts < ? GROUP BY bucket",
+        "SELECT CAST((hour_ts - ?) / 3600 AS INTEGER) AS bucket, total, fail "
+        "FROM check_hourly WHERE hour_ts >= ? AND hour_ts < ?",
         (since, since, since + hours * 3600),
     ).fetchall()
     changes = c.execute(
@@ -311,8 +344,21 @@ def chart_counts(since: int, hours: int):
 
 
 def cleanup_checks(days: int):
-    conn().execute("DELETE FROM checks WHERE ts < ?", (int(time.time()) - days * 86400,))
-    conn().commit()
+    c = conn()
+    cutoff = int(time.time()) - days * 86400
+    cutoff_hour = cutoff - cutoff % 3600
+    c.execute("DELETE FROM checks WHERE ts < ?", (cutoff,))
+    c.execute("DELETE FROM check_hourly WHERE hour_ts < ?", (cutoff_hour,))
+    # 边界小时可能同时含过期与保留记录，按删除后的明细重算以保持 retention 语义。
+    c.execute("DELETE FROM check_hourly WHERE hour_ts = ?", (cutoff_hour,))
+    c.execute(
+        "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) "
+        "SELECT domain_id, ts - (ts % 3600), COUNT(*), "
+        "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) FROM checks "
+        "WHERE ts >= ? AND ts < ? GROUP BY domain_id, ts - (ts % 3600)",
+        (cutoff, cutoff_hour + 3600),
+    )
+    c.commit()
 
 
 # ---------- changes ----------

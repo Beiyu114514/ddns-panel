@@ -1,4 +1,6 @@
 import os
+import datetime
+import random
 import re
 import time
 import uuid
@@ -6,6 +8,7 @@ import uuid
 from fastapi.testclient import TestClient
 
 from app import db
+from app import main as main_module
 from app.main import app, build_timeline
 
 
@@ -67,6 +70,41 @@ def test_homepage_abnormal_row_keeps_latest_check_error(auth_client):
     assert response.status_code == 200
     assert "需要处理" in response.text
     assert marker in response.text
+
+
+def test_hourly_chart_matches_python_aggregation_for_random_checks(tmp_path, monkeypatch):
+    monkeypatch.setenv("DDNS_DATA_DIR", str(tmp_path / "private-data"))
+    import importlib.util
+    db_spec = importlib.util.spec_from_file_location("hourly_isolated_db", db.__file__)
+    isolated_db = importlib.util.module_from_spec(db_spec)
+    db_spec.loader.exec_module(isolated_db)
+    isolated_db.init()
+    monkeypatch.setattr(main_module, "db", isolated_db)
+    did = isolated_db.create_domain(f"hourly-{uuid.uuid4().hex}.example", "A",
+                                    "1.1.1.1", 300, "test")
+    h0 = datetime.datetime.now().replace(minute=0, second=0, microsecond=0) \
+        - datetime.timedelta(hours=23)
+    start = int(h0.timestamp())
+    rng = random.Random(20261113)
+    samples = [(start + rng.randrange(24 * 3600),
+                "timeout" if rng.randrange(5) == 0 else "ok") for _ in range(600)]
+    for ts, status in samples:
+        isolated_db.add_check(did, status, None, None, ts=ts)
+
+    expected = [{"checks": 0, "changes": 0, "fail": 0} for _ in range(24)]
+    for ts, status in samples:
+        index = int((datetime.datetime.fromtimestamp(ts) - h0).total_seconds() // 3600)
+        if 0 <= index < 24:
+            expected[index]["checks"] += 1
+            expected[index]["fail"] += int(status != "ok")
+    for change in isolated_db.conn().execute(
+            "SELECT ts FROM changes WHERE ts >= ? AND old_ip IS NOT NULL", (start,)):
+        index = int((datetime.datetime.fromtimestamp(change["ts"]) - h0).total_seconds() // 3600)
+        if 0 <= index < 24:
+            expected[index]["changes"] += 1
+    actual = main_module._build_chart()["rows"]
+    assert [{key: row[key] for key in ("checks", "changes", "fail")} for row in actual] == expected
+    isolated_db.conn().close()
 
 
 def test_chart_is_keyboard_focusable_with_text_alternative(auth_client):
