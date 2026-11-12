@@ -458,10 +458,6 @@ def mark_changes_notified(domain_id: int, up_to_id: int | None = None):
     conn().commit()
 
 
-def reset_baseline(domain_id: int):
-    add_change(domain_id, None, None, notify=False)
-
-
 def last_reset(domain_id: int):
     return conn().execute(
         "SELECT * FROM changes WHERE domain_id = ? AND old_ip IS NULL AND new_ip IS NULL "
@@ -486,28 +482,6 @@ def current_ip(domain_id: int):
         (domain_id,),
     ).fetchone()
     return row["new_ip"] if row else None
-
-
-def last_change_ts(domain_id: int):
-    row = conn().execute(
-        "SELECT ts, new_ip FROM changes WHERE domain_id = ? ORDER BY ts DESC, id DESC LIMIT 1",
-        (domain_id,),
-    ).fetchone()
-    return row["ts"] if row and row["new_ip"] is not None else None
-
-
-def change_count(domain_id: int, since: int) -> int:
-    return conn().execute(
-        "SELECT COUNT(*) AS n FROM changes WHERE domain_id = ? AND ts >= ? AND old_ip IS NOT NULL",
-        (domain_id, since),
-    ).fetchone()["n"]
-
-
-def count_changes(domain_id: int) -> int:
-    return conn().execute(
-        "SELECT COUNT(*) AS n FROM changes WHERE domain_id = ? AND old_ip IS NOT NULL",
-        (domain_id,),
-    ).fetchone()["n"]
 
 
 def count_changes_window(domain_id: int, since: int, after_id: int | None = None) -> int:
@@ -638,13 +612,6 @@ def change_stats(domain_id: int, since: int | None = None) -> dict:
         "first_records": row["first_records"] or 0,
         "markers": row["markers"] or 0,
     }
-
-
-def count_change_rows(domain_id: int) -> int:
-    # 分页总数包含 marker 行，和表格里实际展示的行数一致
-    return conn().execute(
-        "SELECT COUNT(*) AS n FROM changes WHERE domain_id = ?", (domain_id,)
-    ).fetchone()["n"]
 
 
 def changes_list(domain_id: int, limit: int = 20,

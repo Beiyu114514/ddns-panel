@@ -157,3 +157,33 @@ default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; scri
 建议定期停服务后备份整个 `data/`，使用上面相同的 tar 命令，再启动服务。**不要在运行中只复制 `ddns.db`**：尚未 checkpoint 的提交可能在 `ddns.db-wal` 中；随意分别复制 DB/WAL/SHM 也可能得到不一致快照。无法停机时，用 SQLite 在线备份 API 或支持一致性快照的备份方案。
 
 恢复时先停服务，将备份恢复到 `data/`，保留匹配的数据库及 WAL 文件，执行 `sudo chown -R 10001:10001 data`，确认目录 0700、文件 0600，再启动。备份和初始密码不要进入 Git、镜像构建上下文或公开下载目录。
+
+镜像内置健康检查：每 30 秒用 Python 标准库访问 `http://127.0.0.1:8300/login`（2xx/3xx 为健康），启动宽限 10 秒，单次超时 5 秒，连续失败 3 次标记 unhealthy；无需 curl。
+
+## 测试与门禁
+
+使用 Python 3.13，在虚拟环境中安装运行及开发依赖后执行：
+
+```bash
+.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+.venv/bin/python scripts/check_pages.py
+.venv/bin/python scripts/check_contrast.py
+# 使用全新临时目录，避免改动现有数据；造数会写入显式指定的目录。
+DDNS_BENCH_DIR=$(mktemp -d /tmp/ddns-bench-XXXXXX)
+.venv/bin/python scripts/seed_demo.py --data-dir "$DDNS_BENCH_DIR" --changes 2000
+.venv/bin/python scripts/bench_detail.py --data-dir "$DDNS_BENCH_DIR" --domain-id 1 --days 90 --requests 10
+```
+
+页面门禁始终创建独立临时目录并覆盖外部 `DDNS_DATA_DIR`，退出时自动清理，不会写入生产库。详情性能门禁要求 p95 < 200ms；CI 使用 2000 条 changes，完整压测可将造数改为 `--changes 10000`。GitHub Actions 只做测试与门禁，不发布或部署。
+
+视觉门禁需要 Node.js（支持内置 fetch）、Playwright 模块及能在本机启动的 Chromium（含所需系统库），依赖齐备后运行：
+
+```bash
+PYTHON=.venv/bin/python \
+PLAYWRIGHT_MODULE=/absolute/path/to/node_modules/playwright \
+CHROME_BIN=/absolute/path/to/chromium \
+node scripts/visual.mjs
+```
+
+也可通过 `NODE_PATH` 提供 Playwright；特殊浏览器依赖通过 `LD_LIBRARY_PATH` 指定。脚本自行创建临时数据并启动服务，检查明暗主题 × 320/390/768/1024/1440px，截图保存到 `artifacts/ui/`；浏览器不可用时退出码为 2。默认 CI 不安装浏览器、不运行视觉门禁，需在具备这些前置条件的环境另行执行。

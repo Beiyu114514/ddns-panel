@@ -755,6 +755,8 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
 @media (max-width: 420px) {
   .kv { grid-template-columns: 1fr; }
   .stat-sub { font-size: .74rem; }
+  /* 异常逐项换行会挤出首屏；保留全部告警，通过列表内滚动查看。 */
+  .abnormal-list { max-height: 180px; overflow: auto; padding: 4px; }
   .tl-tick { font-size: .68rem; }
 }
 

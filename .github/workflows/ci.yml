@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: 测试
+        run: python -m pytest -q
+      - name: 页面结构
+        run: python scripts/check_pages.py
+      - name: 对比度
+        run: python scripts/check_contrast.py
+      - name: 准备性能数据
+        run: python scripts/seed_demo.py --data-dir /tmp/ddns-ci --changes 2000
+      - name: 详情性能（p95 < 200ms）
+        run: python scripts/bench_detail.py --data-dir /tmp/ddns-ci --domain-id 1 --days 90 --requests 10
+      # visual.mjs 需 Node.js、Playwright 与兼容的 Chromium；按 README 在本地单独运行。

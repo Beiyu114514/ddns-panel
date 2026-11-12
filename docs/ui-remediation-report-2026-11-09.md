@@ -3,7 +3,7 @@
 > 日期：2026-11-09　对应方案：`docs/ui-remediation-plan-2026-11-09.md`
 > 初验：`docs/ui-acceptance-2026-11-09.md`（HOLD 56/100）
 > 复验结论：**PASS（自评 92/100）**；P0 8/8、P1 25/25、P2 19/24 关闭。
-> 2026-11-13 第 1 批复核：pytest **51 passed**（原有 34 项，本批新增 17 项）、对比度 **76 项通过（含装饰线豁免）**、页面结构 5 页通过；视觉与性能证据沿用原报告。
+> 2026-11-13 第 8 批复审：pytest **218 passed**、对比度 **76 项通过（含装饰线豁免）**、页面结构 5 页通过；视觉与性能均按本次实测更新，保留原复验结论。
 
 ## 1. 交付范围
 
@@ -15,7 +15,7 @@
 - 验收工具：`scripts/check_contrast.py`、`scripts/check_pages.py`、`scripts/seed_demo.py`、`scripts/visual.mjs`
 - 测试：`tests/conftest.py`、`tests/test_db.py`、`tests/test_app.py`
 
-范围外仍未做（与方案一致）：CSRF token、检查异步化、放宽域名校验后仍存在的 `onsubmit` 拼接；本次已删除删除操作的字符串拼接确认，改为 `<details>` 二次确认。
+原报告范围外项目已由后续批次处理：2026-11-13 已增加双提交 CSRF token、检查锁与异步 DNS 查询；删除操作使用 `<details>` 二次确认，无内联 `onsubmit` 拼接。残余限制见第 5 节。
 
 ## 2. 关键实现
 
@@ -26,7 +26,7 @@
 | A2 | ≤760px 隐藏桌面导航，`<details>` 抽屉；`Esc`/点外关闭 | visual 320/390 无横向溢出；`base.html` |
 | A3 | `--border` 改为 #6e7781；浅色 4.1:1、深色 3.77:1 | check_contrast 76 项通过（含装饰线豁免） |
 | A7 | 深色主按钮用 `--accent-solid:#1f6feb`，白字 4.63:1 | check_contrast |
-| B1 | 首屏改为 4 张统计卡 + 异常面板 + 监控项表，图表下移 | visual 首屏监控项 top≈385–411px |
+| B1 | 首屏改为 4 张统计卡 + 异常面板 + 监控项表，图表下移 | 2026-11-13 visual 监控项 top≈551–802px；320px 异常列表限高 180px 后从 943px 提前至 802px，保留滚动内容 |
 | B5 | 图表 `min-width:640px`、轴标签 14px；320/390 实渲 11.79px | visual 10 组全 PASS |
 | B6 | 图表单 `tabindex=0` + `role=group`，←/→ 虚拟光标，24 个 hit 不再各自停靠 | `tests/test_app.py`、visual 方向键断言 |
 | C1 | 时间线 5 个日期刻度（起/25%/50%/75%/止） | `check_pages.py`、`test_app.py` |
@@ -57,27 +57,28 @@
 
 ## 3. 验收证据
 
-环境：`.venv`（Python 3.12.16、FastAPI 0.162.2）；Playwright 1.65.0 chromium headless shell，库路径来自 `~/.local/playwright-deps/root`。
+2026-11-13 复审环境：`/tmp/ddnsvenv`（Python 3.13.5）；本机 Playwright 与 `/usr/bin/chromium`。性能数据为本机 TestClient 实测，受机器负载影响，不代表部署环境保证。以下命令可在已装依赖的 `.venv` 中运行。
 
 ```bash
-cd /data/dsh/home/ddns
 .venv/bin/python -m pytest -q
 .venv/bin/python scripts/check_contrast.py
 .venv/bin/python scripts/check_pages.py
-NODE_PATH=/data/dsh/home/.local/playwright-driver/node_modules \
-LD_LIBRARY_PATH=/data/dsh/home/.local/playwright-deps/root/usr/lib/x86_64-linux-gnu:/data/dsh/home/.local/playwright-deps/root/lib/x86_64-linux-gnu \
-node scripts/visual.mjs
-.venv/bin/python scripts/seed_demo.py --data-dir /tmp/ddns-seedcheck --changes 10000
-.venv/bin/python scripts/bench_detail.py --data-dir /tmp/ddns-seedcheck
+PYTHON=.venv/bin/python \
+PLAYWRIGHT_MODULE=/absolute/path/to/node_modules/playwright \
+CHROME_BIN=/usr/bin/chromium node scripts/visual.mjs
+# 使用全新目录；2000 条对应 CI，10000 条对应完整压测。
+DDNS_BENCH_DIR=$(mktemp -d /tmp/ddns-bench-XXXXXX)
+.venv/bin/python scripts/seed_demo.py --data-dir "$DDNS_BENCH_DIR" --changes 10000
+.venv/bin/python scripts/bench_detail.py --data-dir "$DDNS_BENCH_DIR" --domain-id 1 --days 90 --requests 10
 ```
 
 | 门禁 | 结果 |
 | --- | --- |
-| pytest | **51 passed**（1 条 Starlette/httpx 弃用警告） |
+| pytest | **218 passed**（2026-11-13 复审；1 条 Starlette/httpx 弃用警告） |
 | 对比度 | **76 项通过（含装饰线豁免）**；浅色按钮白字 5.2:1、深色主按钮 4.63:1、深色控件边框 3.77:1、焦点环 6.85:1、12 色 IP ≥3:1 |
 | 页面结构 | 5 页 PASS：唯一 h1/title、lang、skip link、aria-current、autocomplete、图表 Tab、时间线 5 刻度/details、分页 disabled、8 档间隔、所有 POST pending |
-| 视觉矩阵 | 2 主题 × 5 宽度（320/390/768/1024/1440）全 PASS；无横向溢出；轴标签实渲 11.79/12.64/17.35/18.38px；焦点环 3px；截图 20 张 |
-| 性能 | 10000 条 changes 的 `/domain/1?days=90`（TestClient，含模板渲染）：min 17.6–17.7ms / median 18.5–18.7ms / **p95 20.3–24.0ms** / max 38.3–39.0ms，页面约 85KB，192 段并显示采样提示 |
+| 视觉矩阵 | 2 主题 × 5 宽度（320/390/768/1024/1440）全 PASS；无横向溢出；轴标签实渲 11.79/12.34/17.06/18.09px；焦点环 3px；截图 20 张 |
+| 性能 | 2026-11-13 最新 bench：`/domain/1?days=90`（TestClient，含模板渲染，10 次请求）；2000 条 min 18.1ms / median 18.3ms / **p95 21.8ms** / max 49.6ms；10000 条 min 39.2ms / median 44.0ms / **p95 69.5ms** / max 97.0ms，页面约 86KB；两组均通过 p95 < 200ms |
 | 数据边界 | seed 精确 10000 / 240 / 241 行；marker、9 个 IP、90 天窗口 |
 
 ## 4. PASS 1–7
@@ -99,7 +100,10 @@ node scripts/visual.mjs
 | C11 flash 统一 | 未做 | Cloudflare 卡内 warning 与全局 flash 仍是两种视觉 |
 | D4 新建页 CF 说明 | 未做 | 仍只在按钮下方提示 |
 | E5 密码显示切换 | 未做 | 已补 autocomplete 与字段校验，未加显示/隐藏按钮 |
-| 截图人工目检 | 受限 | 当前模型无图像输入，modlens 无 vision provider；`artifacts/ui/` 20 张仅自动化校验 |
+| 截图人工目检 | 部分 | 2026-11-13 已查看 320px 首页截图，其他截图主要由自动门禁校验 |
+| CSRF token 未签名 | 未覆盖 | 已有双提交与 SameSite，尚未签名或绑定会话 |
+| chunked 大请求 | 未覆盖 | Content-Length 限制不覆盖 chunked 流式总量，表单解析前尚无统一体积上限 |
+| 当前密码暴力尝试 | 未覆盖 | 改密验证有 scrypt 并发上限，尚无独立尝试次数限速 |
 
 `artifacts/` 为本地生成物，已加入 `.gitignore`；如需归档证据，可在有图像能力的环境复核后另行提交。
 

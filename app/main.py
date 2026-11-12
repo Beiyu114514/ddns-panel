@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import db
 from .middleware import CSRF_COOKIE, SecurityMiddleware
-from .monitor import Monitor, RESOLVERS, resolve_once
+from .monitor import Monitor, RESOLVERS
 from .notify import send_tg
 from .util import (INTERVAL_OPTIONS, IP_PALETTE_SIZE, fmt_ago, fmt_dur, fmt_empty,
                    fmt_rtt, fmt_short, fmt_ts, interval_label, is_cloudflare,
@@ -533,15 +533,10 @@ def _build_chart(hours: int = 24) -> dict:
         hits.append({
             "x": round(CHART_PAD_L + colw * i, 1),
             "w": round(colw, 1),
-            "cx": round(centers[i], 1),
             "label": f"{_hour_full(ts)}：检查 {b_checks[i]} 次，失败 {b_fail[i]} 次，"
                      f"IP 变动 {b_changes[i]} 次",
         })
 
-    payload = {
-        "labels": [_hour_label(h0 + datetime.timedelta(hours=i)) for i in range(hours)],
-        "checks": b_checks, "changes": b_changes, "fail": b_fail,
-    }
     return {
         "w": CHART_W, "h": CHART_H,
         "pad_l": CHART_PAD_L, "pad_r": CHART_PAD_R,
@@ -556,7 +551,6 @@ def _build_chart(hours: int = 24) -> dict:
         "x_ticks": x_ticks,
         "hits": hits,
         "rows": rows,
-        "payload": payload,
         "legend": [{"key": "checks", "label": "检查次数", "shape": "bar"},
                    {"key": "changes", "label": "IP 变动", "shape": "line"},
                    {"key": "fail", "label": "失败", "shape": "line"}],
@@ -1109,7 +1103,6 @@ def _notify_echo(form) -> dict:
         "tg_chat": str(form.get("tg_chat", "")).strip(),
         "fail_cooldown_min": str(form.get("fail_cooldown_min", "")),
         "change_cooldown_min": str(form.get("change_cooldown_min", "")),
-        "tg_token_pending": bool(str(form.get("tg_token", "")).strip()),
         "clear_tg_token": bool(form.get("clear_tg_token")),
     }
 

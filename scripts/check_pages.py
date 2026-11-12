@@ -4,6 +4,8 @@
 用法：
     .venv/bin/python scripts/check_pages.py
 
+始终使用独立临时目录，覆盖外部 DDNS_DATA_DIR；不会写入部署数据，退出时清理。
+
 检查项：唯一 h1/title、lang、skip link、导航 aria-current、登录 autocomplete、
 图表键盘入口、时间线文本等价物、keyset 分页 disabled 态、表单 label、令牌不回显。
 """
@@ -19,7 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-os.environ.setdefault("DDNS_DATA_DIR", tempfile.mkdtemp(prefix="ddns-pages-"))
+_DATA_DIR = tempfile.TemporaryDirectory(prefix="ddns-pages-")
+os.environ["DDNS_DATA_DIR"] = _DATA_DIR.name
 
 from fastapi.testclient import TestClient  # noqa: E402
 

@@ -1,7 +1,6 @@
 import time
 import uuid
 import importlib.util
-import os
 
 import pytest
 
