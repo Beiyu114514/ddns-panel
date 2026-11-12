@@ -1,7 +1,69 @@
+import importlib.util
+import os
+import stat
 import time
 import uuid
 
+import pytest
+
 from app import db
+
+
+@pytest.fixture
+def isolated_db(tmp_path, monkeypatch):
+    # 独立模块从临时环境变量读取路径，避免关闭会话级测试库的共享连接。
+    monkeypatch.setenv("DDNS_DATA_DIR", str(tmp_path / "private-data"))
+    spec = importlib.util.spec_from_file_location("isolated_db", db.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    yield module
+    if module._conn is not None:
+        module._conn.close()
+
+
+def _assert_private_modes(module):
+    assert stat.S_IMODE(os.stat(module.DATA_DIR).st_mode) == 0o700
+    for suffix in ("", "-wal", "-shm"):
+        assert stat.S_IMODE(os.stat(module.DB_PATH + suffix).st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 文件权限")
+@pytest.mark.parametrize("mask", [0o000, 0o022, 0o077])
+def test_init_restricts_new_data_permissions(isolated_db, mask):
+    previous = os.umask(mask)
+    try:
+        isolated_db.init()
+    finally:
+        os.umask(previous)
+    _assert_private_modes(isolated_db)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 文件权限")
+def test_conn_restricts_existing_data_permissions(isolated_db):
+    isolated_db.init()
+    first = isolated_db._conn
+    os.chmod(isolated_db.DATA_DIR, 0o755)
+    for suffix in ("", "-wal", "-shm"):
+        os.chmod(isolated_db.DB_PATH + suffix, 0o644)
+    # 保留旧连接，确保重新打开时确实存在旧部署遗留的 WAL/SHM。
+    isolated_db._conn = None
+    try:
+        isolated_db.init()
+        _assert_private_modes(isolated_db)
+        assert isolated_db.get_setting("auth_secret")
+    finally:
+        first.close()
+
+
+@pytest.mark.parametrize("error", [PermissionError, NotImplementedError])
+def test_chmod_failure_logs_without_blocking_init(isolated_db, monkeypatch, caplog, error):
+    def fail_chmod(path, mode):
+        raise error("不支持修改权限")
+
+    monkeypatch.setattr(isolated_db.os, "chmod", fail_chmod)
+    isolated_db.init()
+    assert isolated_db.get_setting("password_hash")
+    assert "权限收紧" in caplog.text
 
 
 def _domain(name=None):

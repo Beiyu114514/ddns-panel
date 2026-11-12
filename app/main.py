@@ -28,6 +28,16 @@ from .util import (IP_PALETTE_SIZE, fmt_ago, fmt_dur, fmt_empty, fmt_rtt,
 BASE = os.path.dirname(os.path.abspath(__file__))
 COOKIE = "ddns_session"
 FLASH_COOKIE = "ddns_flash"
+
+
+def _cookie_secure() -> bool:
+    # 只有明确关闭才允许 HTTP 调试；拼写错误或空值仍保持安全默认值。
+    return os.environ.get("COOKIE_SECURE", "true").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+
+
+COOKIE_SECURE = _cookie_secure()
 CHANGES_PAGE_SIZE = 20
 TIMELINE_MAX_SEGMENTS = 240
 TIMELINE_LEGEND_MAX = 8
@@ -257,14 +267,14 @@ async def login_page(request: Request):
     if _cookie_ok(request.cookies.get(COOKIE, "")):
         return RedirectResponse("/", 303)
     return templates.TemplateResponse(request, "login.html", {
-        "hide_nav": True, "error": None,
+        "hide_nav": True, "error": None, "cookie_secure": COOKIE_SECURE,
     })
 
 
 def _login_error(request: Request, message: str, status: int = 400):
     # 登录失败留在当前页原位提示，不把错误塞进 URL（A11），也避免刷新丢状态
     return templates.TemplateResponse(request, "login.html", {
-        "hide_nav": True, "error": message,
+        "hide_nav": True, "error": message, "cookie_secure": COOKIE_SECURE,
     }, status_code=status)
 
 
@@ -298,7 +308,7 @@ async def login(request: Request):
         exp = now + 30 * 86400
         resp = RedirectResponse("/", 303)
         resp.set_cookie(COOKIE, f"{exp}.{_sign(exp)}", max_age=30 * 86400,
-                        httponly=True, samesite="lax", secure=True)
+                        httponly=True, samesite="lax", secure=COOKIE_SECURE)
         return resp
     if ok:
         # 校验通过但密码已在验证期间被改掉：不签 cookie，也不计入失败次数

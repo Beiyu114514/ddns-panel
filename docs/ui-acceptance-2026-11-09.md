@@ -2,7 +2,7 @@
 
 > 初验：2026-11-09　判定：**HOLD**　总分：**56 / 100**（以下问题清单保留为整改基线）
 > 复验：2026-11-09　判定：**PASS（自评 92 / 100）**　P0 **8/8**、P1 **25/25**、P2 **19/24** 关闭
-> 复验证据与命令：`docs/ui-remediation-report-2026-11-09.md`；自动化门禁：pytest 21 passed、对比度 72 项、页面结构 5 页、视觉 2 主题 × 5 宽度、1 万条详情 p95≈20–24ms。
+> 复验证据与命令：`docs/ui-remediation-report-2026-11-09.md`；2026-11-13 第 1 批自动化复核：pytest 51 passed、对比度 76 项（含装饰线豁免）、页面结构 5 页。原视觉/性能证据：2 主题 × 5 宽度、1 万条详情 p95≈20–24ms。
 > 审查范围：`app/templates/` 下 6 个模板、`app/static/style.css`，对照 `app/main.py`、`app/util.py`
 > 初验局限：当时环境无法启动服务与截图；本次复验已用 TestClient + Playwright 补齐自动化证据，但截图仍无法人工目检（无 vision provider）。
 
@@ -153,7 +153,7 @@
 | P1 | 25 | 25 | 0 | 修复率 100%（目标 ≥90%） |
 | P2 | 24 | 19 | 5 | 剩余 A12/A14/C11/D4/E5，均为非阻断打磨项 |
 
-**PASS 1–7 逐条**：1 首屏异常面板 + 立即检查（visual 首屏 top 385–411px）；2 对比度 72 项全 PASS、焦点环 3px；3 五档宽度 `scrollWidth === innerWidth`、390 表格卡片化；4 图表标签实渲 ≥11.79px、单 Tab + 方向键；5 时间线 5 刻度 + details 文本等价 + 键盘逐段；6 字段级 `aria-invalid` + 所有 POST `data-pending`；7 `status_label`/`fmt_empty` 统一状态与空值。
+**PASS 1–7 逐条**：1 首屏异常面板 + 立即检查（visual 首屏 top 385–411px）；2 对比度 76 项通过（含装饰线豁免）、焦点环 3px；3 五档宽度 `scrollWidth === innerWidth`、390 表格卡片化；4 图表标签实渲 ≥11.79px、单 Tab + 方向键；5 时间线 5 刻度 + details 文本等价 + 键盘逐段；6 字段级 `aria-invalid` + 所有 POST `data-pending`；7 `status_label`/`fmt_empty` 统一状态与空值。
 
 **残余与限制**：A12 间距未完全网格化、A14 缺 `:active`、C11 Cloudflare 警告与全局 flash 仍是两种视觉、D4 添加页缺 Cloudflare 即时说明、E5 无密码显示切换；`artifacts/ui/` 20 张截图因当前模型无视觉输入、modlens 无 provider，未做人工目检，最终视觉签字仍需有图像能力的环境复核。
 

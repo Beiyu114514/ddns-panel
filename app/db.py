@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 import sqlite3
@@ -12,6 +13,7 @@ DATA_DIR = os.environ.get("DDNS_DATA_DIR") or os.path.join(BASE, "data")
 DB_PATH = os.path.join(DATA_DIR, "ddns.db")
 
 _conn = None
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -59,14 +61,35 @@ CREATE INDEX IF NOT EXISTS idx_checks_ts ON checks (ts);
 """
 
 
+def _restrict_permissions(path: str, mode: int):
+    try:
+        os.chmod(path, mode)
+    except FileNotFoundError:
+        # WAL/SHM 会随连接和检查点创建、删除，不存在时无需处理
+        pass
+    except (OSError, NotImplementedError) as e:
+        # 非 root 部署、Windows 或特殊挂载可能不允许 chmod；保留服务可用性，
+        # 但必须让管理员看到告警，以便在宿主机上修正权限
+        logger.warning("无法将 %s 权限收紧为 %04o: %s", path, mode, e)
+
+
 def conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
-        os.makedirs(DATA_DIR, exist_ok=True)
+        os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
+        _restrict_permissions(DATA_DIR, 0o700)
+        # 新库先以 0600 创建，避免宽松 umask 产生可读窗口；已有库不会被截断。
+        # SQLite 的 WAL/SHM 继承主库权限，因此要在打开连接前收紧主库。
+        fd = os.open(DB_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+        os.close(fd)
+        for suffix in ("", "-wal", "-shm"):
+            _restrict_permissions(DB_PATH + suffix, 0o600)
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA busy_timeout=5000")
+        for suffix in ("-wal", "-shm"):
+            _restrict_permissions(DB_PATH + suffix, 0o600)
     return _conn
 
 

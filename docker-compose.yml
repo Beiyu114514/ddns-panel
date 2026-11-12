@@ -7,6 +7,8 @@ services:
       - "127.0.0.1:8300:8300"
     environment:
       TZ: Asia/Shanghai
+      # 生产环境保持 true 并由反代提供 HTTPS；仅内网 HTTP 调试时显式关闭。
+      COOKIE_SECURE: "${COOKIE_SECURE-true}"
       # 这些地址被视为可信反向代理：来自它们的 X-Forwarded-For 才会被采信用于登录限速。
       # 端口只发布到 127.0.0.1，通常由宿主机上的 nginx/caddy 反代；Docker 桥接网段
       # （172.16.0.0/12）已覆盖默认情况。直接暴露到公网时应改为空值或仅保留回环地址。

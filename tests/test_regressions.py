@@ -86,6 +86,54 @@ def test_session_cookie_is_secure(client):
     assert cookies and "Secure" in cookies[0]
 
 
+@pytest.mark.parametrize("value", ["0", "FALSE", " no ", "Off"])
+def test_cookie_secure_can_be_disabled_for_http(monkeypatch, value):
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    path = os.path.join(db.DATA_DIR, "initial_password.txt")
+    with open(path, encoding="utf-8") as f:
+        password = f.read().strip()
+    monkeypatch.setenv("COOKIE_SECURE", value)
+    monkeypatch.setattr(main, "COOKIE_SECURE", main._cookie_secure())
+    client = TestClient(main.app, base_url="http://testserver")
+    page = client.get("/login")
+    assert "HTTP 明文登录模式已开启" in page.text
+    resp = client.post("/login", data={"password": password}, follow_redirects=False)
+    cookies = [c for c in resp.headers.get_list("set-cookie")
+               if c.startswith("ddns_session=")]
+    assert cookies and "Secure" not in cookies[0]
+    assert client.get("/").status_code == 200
+
+
+@pytest.mark.parametrize("value", [None, "", "true", "1", "typo"])
+def test_cookie_secure_defaults_to_enabled(monkeypatch, value):
+    from app import main
+
+    if value is None:
+        monkeypatch.delenv("COOKIE_SECURE", raising=False)
+    else:
+        monkeypatch.setenv("COOKIE_SECURE", value)
+    assert main._cookie_secure() is True
+
+
+@pytest.mark.parametrize("secure", [True, False])
+def test_login_warning_matches_secure_mode_on_errors(monkeypatch, secure):
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    monkeypatch.setattr(main, "COOKIE_SECURE", secure)
+    monkeypatch.setattr(main, "LOGIN_FAILS", {})
+    client = TestClient(main.app, base_url="https://testserver")
+    page = client.get("/login")
+    error = client.post("/login", data={"password": "wrong-password"})
+    assert error.status_code == 400
+    for response in (page, error):
+        assert ("HTTP 明文登录模式已开启" in response.text) is not secure
+
+
 def test_flash_set_by_handler_survives_middleware(auth_client):
     data = {"tg_chat": "1", "fail_cooldown_min": "60", "change_cooldown_min": "0"}
     first = auth_client.post("/settings/notify", data=data, follow_redirects=False)

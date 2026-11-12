@@ -5,6 +5,10 @@
   <div class="card login-card">
     <h1>登录 DDNS 监控</h1>
     <p class="muted login-host">当前节点：<strong>{{ request.url.hostname }}</strong></p>
+    {% if not cookie_secure %}
+    <div class="flash bad" role="alert"><strong>HTTP 明文登录模式已开启</strong>：仅限内网调试，
+      通过 HTTP 访问时密码和会话可能被窃取。</div>
+    {% endif %}
     {% if error %}<div class="flash bad" id="login-error" role="alert">{{ error }}</div>{% endif %}
     <form method="post" action="/login" class="form" data-pending="登录中…">
       <label for="password">密码</label>
