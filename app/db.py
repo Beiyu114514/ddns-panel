@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import stat
 import time
+import datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 允许测试与演示种子使用独立数据目录，避免污染真实数据
@@ -14,6 +15,12 @@ DB_PATH = os.path.join(DATA_DIR, "ddns.db")
 
 _conn = None
 logger = logging.getLogger(__name__)
+
+
+def local_hour_ts(ts: int) -> int:
+    """返回本地墙上整点；DST 回拨的重复小时合并到第一次出现的桶。"""
+    return int(datetime.datetime.fromtimestamp(int(ts)).replace(
+        minute=0, second=0, microsecond=0, fold=0).timestamp())
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -99,6 +106,7 @@ def conn() -> sqlite3.Connection:
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA busy_timeout=5000")
+        _conn.create_function("local_hour_ts", 1, local_hour_ts, deterministic=True)
         for suffix in ("-wal", "-shm"):
             _restrict_permissions(DB_PATH + suffix, 0o600)
     return _conn
@@ -155,18 +163,21 @@ def _migrate(c: sqlite3.Connection):
 
 
 def _migrate_check_hourly(c: sqlite3.Connection):
-    if get_setting("check_hourly_backfilled") == "1":
+    tz_key = os.environ.get("TZ") or ",".join(time.tzname)
+    if get_setting("check_hourly_local_backfilled") == tz_key:
         return
-    # 汇总回填与标记放在同一事务里：中断时两者一起回滚，重启可安全重试。
+    # 旧汇总按 UTC 整点分桶；切换本地整点后必须整表重建，不能沿用旧桶。
+    c.execute("DELETE FROM check_hourly")
     c.execute(
-        "INSERT OR IGNORE INTO check_hourly (domain_id, hour_ts, total, fail) "
-        "SELECT domain_id, ts - (ts % 3600), COUNT(*), "
+        "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) "
+        "SELECT domain_id, local_hour_ts(ts), COUNT(*), "
         "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) "
-        "FROM checks GROUP BY domain_id, ts - (ts % 3600)"
+        "FROM checks GROUP BY domain_id, local_hour_ts(ts)"
     )
     c.execute(
-        "INSERT INTO settings (key, value) VALUES ('check_hourly_backfilled', '1') "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        "INSERT INTO settings (key, value) VALUES ('check_hourly_local_backfilled', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (tz_key,),
     )
     c.commit()
 
@@ -286,7 +297,7 @@ def add_check(domain_id: int, status: str, ip, rtt_ms, error=None, ts: int | Non
         "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) VALUES (?, ?, 1, ?) "
         "ON CONFLICT(domain_id, hour_ts) DO UPDATE SET "
         "total = total + 1, fail = fail + excluded.fail",
-        (domain_id, ts - (ts % 3600), int(status != "ok")),
+        (domain_id, local_hour_ts(ts), int(status != "ok")),
     )
     c.commit()
 
@@ -323,7 +334,7 @@ def check_stats_since(since: int):
         "SELECT COALESCE(SUM(total), 0) AS total, "
         "COALESCE(SUM(total - fail), 0) AS ok, COALESCE(SUM(fail), 0) AS fail "
         "FROM check_hourly WHERE hour_ts >= ?",
-        (since - (since % 3600),),
+        (local_hour_ts(since),),
     ).fetchone()
 
 
@@ -346,17 +357,20 @@ def chart_counts(since: int, hours: int):
 def cleanup_checks(days: int):
     c = conn()
     cutoff = int(time.time()) - days * 86400
-    cutoff_hour = cutoff - cutoff % 3600
+    cutoff_hour = local_hour_ts(cutoff)
+    cutoff_end = int((datetime.datetime.fromtimestamp(cutoff_hour)
+                      + datetime.timedelta(hours=1)).timestamp())
     c.execute("DELETE FROM checks WHERE ts < ?", (cutoff,))
     c.execute("DELETE FROM check_hourly WHERE hour_ts < ?", (cutoff_hour,))
     # 边界小时可能同时含过期与保留记录，按删除后的明细重算以保持 retention 语义。
     c.execute("DELETE FROM check_hourly WHERE hour_ts = ?", (cutoff_hour,))
     c.execute(
         "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) "
-        "SELECT domain_id, ts - (ts % 3600), COUNT(*), "
+        "SELECT domain_id, local_hour_ts(ts), COUNT(*), "
         "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) FROM checks "
-        "WHERE ts >= ? AND ts < ? GROUP BY domain_id, ts - (ts % 3600)",
-        (cutoff, cutoff_hour + 3600),
+        "WHERE ts >= ? AND ts < ? AND local_hour_ts(ts) = ? "
+        "GROUP BY domain_id, local_hour_ts(ts)",
+        (cutoff, cutoff_end, cutoff_hour),
     )
     c.commit()
 

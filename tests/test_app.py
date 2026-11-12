@@ -6,6 +6,7 @@ import time
 import uuid
 
 from fastapi.testclient import TestClient
+import pytest
 
 from app import db
 from app import main as main_module
@@ -86,7 +87,8 @@ def test_hourly_chart_matches_python_aggregation_for_random_checks(tmp_path, mon
         - datetime.timedelta(hours=23)
     start = int(h0.timestamp())
     rng = random.Random(20261113)
-    samples = [(start + rng.randrange(24 * 3600),
+    sample_span = min(24 * 3600, int(time.time()) - start + 1)
+    samples = [(start + rng.randrange(sample_span),
                 "timeout" if rng.randrange(5) == 0 else "ok") for _ in range(600)]
     for ts, status in samples:
         isolated_db.add_check(did, status, None, None, ts=ts)
@@ -105,6 +107,58 @@ def test_hourly_chart_matches_python_aggregation_for_random_checks(tmp_path, mon
     actual = main_module._build_chart()["rows"]
     assert [{key: row[key] for key in ("checks", "changes", "fail")} for row in actual] == expected
     isolated_db.conn().close()
+
+
+@pytest.mark.parametrize("tz_name", ["Asia/Shanghai", "Asia/Kolkata"])
+def test_timezone_hourly_chart_and_today_stats_match_details(tmp_path, monkeypatch, tz_name):
+    old_tz = os.environ.get("TZ")
+    os.environ["TZ"] = tz_name
+    time.tzset()
+    isolated_db = None
+    try:
+        import importlib.util
+        db_spec = importlib.util.spec_from_file_location("kolkata_isolated_db", db.__file__)
+        isolated_db = importlib.util.module_from_spec(db_spec)
+        db_spec.loader.exec_module(isolated_db)
+        isolated_db.init()
+        monkeypatch.setattr(main_module, "db", isolated_db)
+        did = isolated_db.create_domain(f"kolkata-{uuid.uuid4().hex}.example", "A",
+                                        "1.1.1.1", 300, "test")
+        h0 = datetime.datetime.now().replace(minute=0, second=0, microsecond=0) \
+            - datetime.timedelta(hours=23)
+        start = int(h0.timestamp())
+        rng = random.Random(530)
+        sample_span = min(24 * 3600, int(time.time()) - start + 1)
+        samples = [(start + rng.randrange(sample_span),
+                    "timeout" if rng.randrange(4) == 0 else "ok") for _ in range(1200)]
+        for ts, status in samples:
+            isolated_db.add_check(did, status, None, None, ts=ts)
+
+        expected = [0] * 24
+        for ts, _ in samples:
+            index = int((datetime.datetime.fromtimestamp(ts) - h0).total_seconds() // 3600)
+            if 0 <= index < 24:
+                expected[index] += 1
+        actual = [row["checks"] for row in main_module._build_chart()["rows"]]
+        assert actual == expected
+        assert sum(actual) == 1200
+
+        today_start = int(datetime.datetime.now().replace(
+            hour=0, minute=0, second=0, microsecond=0).timestamp())
+        stats = isolated_db.check_stats_since(today_start)
+        details = isolated_db.conn().execute(
+            "SELECT COUNT(*) AS total, SUM(status = 'ok') AS ok, "
+            "SUM(status != 'ok') AS fail FROM checks WHERE ts >= ?", (today_start,),
+        ).fetchone()
+        assert tuple(stats) == tuple(details)
+    finally:
+        if isolated_db is not None and isolated_db._conn is not None:
+            isolated_db._conn.close()
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        time.tzset()
 
 
 def test_chart_is_keyboard_focusable_with_text_alternative(auth_client):

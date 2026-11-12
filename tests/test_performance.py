@@ -38,7 +38,7 @@ def test_large_query_plans_use_time_indexes(tmp_path, monkeypatch):
         [(did, now - i, "ok" if i % 10 else "timeout") for i in range(25000)],
     )
     c.commit()
-    c.execute("DELETE FROM settings WHERE key = 'check_hourly_backfilled'")
+    c.execute("DELETE FROM settings WHERE key = 'check_hourly_local_backfilled'")
     isolated_db._migrate_check_hourly(c)
     assert c.execute("SELECT SUM(total) FROM check_hourly").fetchone()[0] == 25000
     isolated_db._migrate_check_hourly(c)
@@ -87,9 +87,9 @@ def test_cleanup_preserves_retention_boundary_hour(isolated_database, monkeypatc
     )
     c.execute(
         "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) "
-        "SELECT domain_id, ts - (ts % 3600), COUNT(*), "
+        "SELECT domain_id, local_hour_ts(ts), COUNT(*), "
         "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) FROM checks "
-        "WHERE domain_id = ? GROUP BY domain_id, ts - (ts % 3600)", (did,),
+        "WHERE domain_id = ? GROUP BY domain_id, local_hour_ts(ts)", (did,),
     )
     c.commit()
     monkeypatch.setattr(isolated_database.time, "time", lambda: now)
@@ -115,9 +115,9 @@ def test_homepage_20w_checks_uses_hourly_summary(auth_client):
     )
     c.execute(
         "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) "
-        "SELECT domain_id, ts - (ts % 3600), COUNT(*), "
+        "SELECT domain_id, local_hour_ts(ts), COUNT(*), "
         "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) FROM checks "
-        "WHERE domain_id = ? GROUP BY domain_id, ts - (ts % 3600)", (did,),
+        "WHERE domain_id = ? GROUP BY domain_id, local_hour_ts(ts)", (did,),
     )
     c.commit()
 
