@@ -53,6 +53,22 @@ def test_pages_have_single_h1_title_and_skip_link(auth_client):
         assert 'aria-current="page"' in html
 
 
+def test_homepage_abnormal_row_keeps_latest_check_error(auth_client):
+    marker = f"unique-error-{uuid.uuid4().hex}"
+    did = db.create_domain(f"error-{uuid.uuid4().hex}.example", "A",
+                           "1.1.1.1", 300, "test")
+    db.conn().execute(
+        "INSERT INTO checks (domain_id, ts, status, error) VALUES (?, ?, ?, ?)",
+        (did, int(time.time()), "timeout", marker),
+    )
+    db.conn().commit()
+
+    response = auth_client.get("/")
+    assert response.status_code == 200
+    assert "需要处理" in response.text
+    assert marker in response.text
+
+
 def test_chart_is_keyboard_focusable_with_text_alternative(auth_client):
     _seed_domain()
     html = auth_client.get("/").text

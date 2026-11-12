@@ -43,6 +43,11 @@ def test_large_query_plans_use_time_indexes(tmp_path, monkeypatch):
     assert "SCAN changes" not in change_plan
     assert "SCAN checks" not in check_plan
     assert "idx_changes_pending" in pending_plan
+    latest_check_plan = " ".join(r["detail"] for r in c.execute(
+        "EXPLAIN QUERY PLAN SELECT id FROM checks WHERE domain_id = ? "
+        "ORDER BY ts DESC, id DESC LIMIT 1", (did,),
+    ))
+    assert "idx_checks_dom_ts" in latest_check_plan
     c.close()
 
 

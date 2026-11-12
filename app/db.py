@@ -270,13 +270,6 @@ def recent_checks(domain_id: int, limit: int = 20):
     ).fetchall()
 
 
-def global_last_check():
-    return conn().execute(
-        "SELECT c.*, d.name AS domain_name, d.rrtype, d.resolver FROM checks c "
-        "JOIN domains d ON d.id = c.domain_id ORDER BY c.ts DESC, c.id DESC LIMIT 1"
-    ).fetchone()
-
-
 def global_last_bad_check():
     """最近一条非 ok 检查（首页“最近检查”只展示异常，正常不打扰）。
 
@@ -504,16 +497,15 @@ def count_domains() -> dict:
 def overview_domains(since7: int, since30: int):
     """一次读取首页所需域名状态字段，避免每个域名重复发起五条查询。"""
     return conn().execute(
-        "SELECT d.*, "
-        "(SELECT c.id FROM checks c WHERE c.domain_id = d.id ORDER BY c.ts DESC, c.id DESC LIMIT 1) AS last_id, "
-        "(SELECT c.ts FROM checks c WHERE c.domain_id = d.id ORDER BY c.ts DESC, c.id DESC LIMIT 1) AS last_ts, "
-        "(SELECT c.status FROM checks c WHERE c.domain_id = d.id ORDER BY c.ts DESC, c.id DESC LIMIT 1) AS last_status, "
-        "(SELECT c.ip FROM checks c WHERE c.domain_id = d.id ORDER BY c.ts DESC, c.id DESC LIMIT 1) AS last_check_ip, "
+        "SELECT d.*, last.id AS last_id, last.ts AS last_ts, last.status AS last_status, "
+        "last.ip AS last_check_ip, last.error AS last_error, "
         "(SELECT new_ip FROM changes WHERE domain_id = d.id ORDER BY ts DESC, id DESC LIMIT 1) AS cur, "
         "(SELECT MAX(ts) FROM changes WHERE domain_id = d.id) AS activity, "
         "(SELECT COUNT(*) FROM changes WHERE domain_id = d.id AND ts >= ? AND old_ip IS NOT NULL) AS c7, "
         "(SELECT COUNT(*) FROM changes WHERE domain_id = d.id AND ts >= ? AND old_ip IS NOT NULL) AS c30 "
-        "FROM domains d ORDER BY d.name",
+        "FROM domains d LEFT JOIN checks last ON last.id = ("
+        "SELECT id FROM checks WHERE domain_id = d.id ORDER BY ts DESC, id DESC LIMIT 1) "
+        "ORDER BY d.name",
         (since7, since30),
     ).fetchall()
 

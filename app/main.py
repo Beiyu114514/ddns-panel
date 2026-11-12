@@ -466,7 +466,8 @@ async def index(request: Request):
     abnormal_rows = []
     for d in db.overview_domains(now - 7 * 86400, now - 30 * 86400):
         last = (dict(id=d["last_id"], ts=d["last_ts"], status=d["last_status"],
-                     ip=d["last_check_ip"]) if d["last_id"] is not None else None)
+                     ip=d["last_check_ip"], error=d["last_error"])
+                if d["last_id"] is not None else None)
         if not d["enabled"]:
             state = "disabled"
         elif last and last["status"] != "ok":
