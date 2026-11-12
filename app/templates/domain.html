@@ -94,7 +94,7 @@
   <div class="tl-track" id="tl-track" tabindex="0" role="group"
        aria-label="IP 时间线，使用左右方向键逐段查看" aria-describedby="tl-tip">
     {% for s in tl.segments %}
-    <span class="tl-seg ip-{{ s.color }}" style="left: {{ s.left }}%; width: {{ s.width }}%"
+    <span class="tl-seg ip-{{ s.color }}{% if s.dup %} tl-dup{% endif %}" style="left: {{ s.left }}%; width: {{ s.width }}%"
           title="{{ s.title }}" data-label="{{ s.label }}" aria-hidden="true"></span>
     {% endfor %}
     {% if tl.marker_left is not none %}

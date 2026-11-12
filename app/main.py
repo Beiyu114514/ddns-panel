@@ -69,6 +69,8 @@ CHANGES_PAGE_SIZE = 20
 TIMELINE_MAX_SEGMENTS = 240
 TIMELINE_LEGEND_MAX = 8
 TIMELINE_TICKS = 5
+# Python 整数可无限增长，但 SQLite 绑定只接受有符号 64 位整数。
+SQLITE_MAX_INTEGER = 2**63 - 1
 INTERVAL_OPTIONS = [
     (60, "1 分钟"), (300, "5 分钟"), (600, "10 分钟"), (1800, "30 分钟"),
     (3600, "1 小时"), (7200, "2 小时"), (21600, "6 小时"), (86400, "24 小时"),
@@ -598,18 +600,29 @@ def _parse_cursor(raw) -> tuple:
         return None, None
     try:
         ts, rid = str(raw).split("_", 1)
-        return int(ts), int(rid)
+        ts, rid = int(ts), int(rid)
+        if not (0 <= ts <= SQLITE_MAX_INTEGER and 0 <= rid <= SQLITE_MAX_INTEGER):
+            return None, None
+        return ts, rid
     except (ValueError, TypeError):
         return None, None
+
+
+def _parse_domain_id(raw) -> int | None:
+    try:
+        domain_id = int(raw)
+    except (ValueError, TypeError):
+        return None
+    return domain_id if 0 < domain_id <= SQLITE_MAX_INTEGER else None
 
 
 def _build_timeline(domain_id: int, days: int, now: int) -> dict:
     """C1/C2/C4/C5/C8：时间线视图模型。
 
     - 刻度：5 个等距时间点，含首尾；
-    - 分段：基线 + 变动，最多 240 段（超出按时间桶取样）；
+    - 分段：基线 + 变动共最多 240 段，基线存在时采样预留 1 段；
     - 图例时长：始终用未采样全量记录计算（R1）；
-    - 段与图例共享 12 色板（R5），相邻同色靠纹理兜底。
+    - 段与图例共享 12 色板（R5），相邻同色段标记纹理以区分边界。
     """
     start = now - days * 86400
     total = max(1, now - start)
@@ -627,13 +640,15 @@ def _build_timeline(domain_id: int, days: int, now: int) -> dict:
     counts = db.change_stats(domain_id, since=window_since)
     window_count = db.count_changes_window(domain_id, window_since, after_id)
     # 采样阈值按可绘制行数（含首次记录）判断，展示计数只算真实变动
-    sampled = db.count_timeline_rows(domain_id, window_since, after_id) > TIMELINE_MAX_SEGMENTS
+    # 基线可能占一段；提前预留容量，避免窗口内恰好 240 行时绘出 241 段。
+    segment_budget = TIMELINE_MAX_SEGMENTS - int(bool(baseline))
+    sampled = db.count_timeline_rows(domain_id, window_since, after_id) > segment_budget
     bucket = None
     bucket_label = None
     if sampled:
         span = max(1, now - window_since)
         unit = 3600 if span >= 86400 else (60 if span >= 3600 else 1)
-        bucket = max(unit, math.ceil(span / TIMELINE_MAX_SEGMENTS / unit) * unit)
+        bucket = max(unit, math.ceil(span / segment_budget / unit) * unit)
         if bucket >= 3600:
             bucket_label = f"{bucket // 3600} 小时"
         elif bucket >= 60:
@@ -675,6 +690,9 @@ def _build_timeline(domain_id: int, days: int, now: int) -> dict:
             "title": f"{ip}  {fmt_short(s0)} – {fmt_short(s1)}",
         })
     segments.sort(key=lambda s: s["left"])
+    # 调色板循环分配可能让新 IP 与前段撞色，用纹理保留可见边界。
+    for previous, current in zip(segments, segments[1:]):
+        current["dup"] = current["color_index"] == previous["color_index"]
 
     durations = {d["ip"]: d["dur"] for d in db.change_durations(
         domain_id, window_since, after_id, now)}
@@ -787,7 +805,10 @@ async def domain_create(request: Request):
 
 
 @app.get("/domain/{domain_id}")
-async def domain_detail(request: Request, domain_id: int, days: int = 30, page: int = 1):
+async def domain_detail(request: Request, domain_id: str, days: int = 30, page: int = 1):
+    domain_id = _parse_domain_id(domain_id)
+    if domain_id is None:
+        return _flash_redirect("/", err="监控项不存在")
     d = db.get_domain(domain_id)
     if not d:
         return _flash_redirect("/", err="监控项不存在")
@@ -843,7 +864,10 @@ async def domain_detail(request: Request, domain_id: int, days: int = 30, page: 
 
 
 @app.post("/domain/{domain_id}/update")
-async def domain_update(request: Request, domain_id: int):
+async def domain_update(request: Request, domain_id: str):
+    domain_id = _parse_domain_id(domain_id)
+    if domain_id is None:
+        return _flash_redirect("/", err="监控项不存在")
     form = await request.form()
     # 必须在 await 之后再读：表单解析期间另一个请求可能已改过记录类型，
     # 用旧值决定是否重置基线会把新类型的基线写坏
@@ -872,14 +896,20 @@ async def domain_update(request: Request, domain_id: int):
 
 
 @app.post("/domain/{domain_id}/delete")
-async def domain_delete(domain_id: int):
+async def domain_delete(domain_id: str):
+    domain_id = _parse_domain_id(domain_id)
+    if domain_id is None:
+        return _flash_redirect("/", err="监控项不存在")
     db.delete_domain(domain_id)
     monitor.poke()
     return _flash_redirect("/", msg="已删除")
 
 
 @app.post("/domain/{domain_id}/check")
-async def domain_check(domain_id: int):
+async def domain_check(domain_id: str):
+    domain_id = _parse_domain_id(domain_id)
+    if domain_id is None:
+        return _flash_redirect("/", err="监控项不存在")
     d = db.get_domain(domain_id)
     if not d:
         return _flash_redirect("/", err="监控项不存在")

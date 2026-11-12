@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import time
 import uuid
 
@@ -186,6 +187,79 @@ def test_timeline_sampling_uses_drawable_rows():
     tl = build_timeline(did, 30, now)
     assert tl["sampled"] is True
     assert len(tl["segments"]) <= 240
+
+
+def test_timeline_sampling_counts_baseline_segment(auth_client):
+    did = _domain()
+    now = int(time.time())
+    start = now - 30 * 86400
+    _change(did, start - 100, None, "10.0.0.1")
+    for i in range(240):
+        # 均匀铺满窗口，避免密集记录被同一个桶合并后掩盖段数越界。
+        _change(did, start + 100 + i * 10700,
+                "10.0.0.1", "10.0.0.2" if i % 2 == 0 else "10.0.0.1")
+    assert db.count_changes_window(did, start) == 240
+    tl = build_timeline(did, 30, now)
+    assert tl["sampled"] is True
+    assert len(tl["segments"]) <= 240
+    assert sum(item["dur"] for item in tl["legend"]) == 30 * 86400
+    response = auth_client.get(f"/domain/{did}")
+    assert response.status_code == 200
+    assert response.text.count('class="tl-seg ') <= 240
+
+
+def test_timeline_marks_adjacent_reused_palette_color(auth_client):
+    did = _domain()
+    now = int(time.time())
+    start = now - 30 * 86400
+    ips = [f"10.0.{i // 254}.{i % 254 + 1}" for i in range(13)]
+    sequence = [*ips[:12], ips[0], ips[12]]
+    for i, ip in enumerate(sequence):
+        _change(did, start + 100 + i * 60, None if i == 0 else sequence[i - 1], ip)
+    response = auth_client.get(f"/domain/{did}")
+    assert response.status_code == 200
+    assert response.text.count('class="tl-seg ') == len(sequence)
+    assert 'class="tl-seg ip-1 tl-dup"' in response.text
+    segments = build_timeline(did, 30, now)["segments"]
+    assert segments[-2]["color_index"] == segments[-1]["color_index"]
+    assert segments[-1]["dup"] is True
+
+
+@pytest.mark.parametrize("cursor", [
+    "99999999999999999999999999_1", "1_99999999999999999999999999",
+    "-1_1", "1_-1", "nope_1", "1_nope", "not-a-cursor",
+])
+@pytest.mark.parametrize("direction", ["before", "after"])
+def test_invalid_cursor_falls_back_to_first_page(auth_client, cursor, direction):
+    did = _domain()
+    now = int(time.time())
+    for i in range(25):
+        _change(did, now - 60 * (i + 1), "10.0.0.1", f"10.0.0.{i + 2}")
+    first_page = auth_client.get(f"/domain/{did}").text
+    response = auth_client.get(f"/domain/{did}", params={direction: cursor})
+    assert response.status_code == 200
+    assert re.findall(r'<tbody>.*?</tbody>', response.text, re.S) == re.findall(
+        r'<tbody>.*?</tbody>', first_page, re.S)
+
+
+@pytest.mark.parametrize("bad_id", [
+    "99999999999999999999999999", str(2**63), "0", "-1", "not-an-id",
+])
+@pytest.mark.parametrize("suffix", ["", "/update", "/delete", "/check"])
+def test_invalid_domain_ids_redirect_to_html_home(auth_client, bad_id, suffix, monkeypatch):
+    def unexpected_db_access(*args, **kwargs):
+        pytest.fail("非法 ID 应在访问域名数据库前拦截")
+
+    monkeypatch.setattr(db, "get_domain", unexpected_db_access)
+    monkeypatch.setattr(db, "delete_domain", unexpected_db_access)
+    method = "POST" if suffix else "GET"
+    response = auth_client.request(method, f"/domain/{bad_id}{suffix}", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+    home = auth_client.get(response.headers["location"])
+    assert home.status_code == 200
+    assert "text/html" in home.headers["content-type"]
+    assert "监控项不存在" in home.text
 
 
 def test_timeline_baseline_zero_width_at_window_start():
