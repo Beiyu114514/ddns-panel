@@ -17,5 +17,5 @@ USER 10001:10001
 
 EXPOSE 8300
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8300/login', timeout=3); raise SystemExit(0 if 200 <= r.status < 400 else 1)"
+    CMD python -c "import urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8300/healthz', timeout=3); raise SystemExit(0 if r.status == 200 else 1)"
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8300", "--workers", "1", "--no-proxy-headers"]

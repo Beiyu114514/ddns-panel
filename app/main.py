@@ -15,7 +15,7 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -302,7 +302,7 @@ def _rate_limit_key(ip: str) -> str:
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     p = request.url.path
-    if p != "/login" and not p.startswith("/static") \
+    if p not in {"/login", "/healthz"} and not p.startswith("/static") \
             and not _cookie_ok(request.cookies.get(COOKIE, "")):
         return RedirectResponse("/login", status_code=303)
     return await call_next(request)
@@ -338,6 +338,16 @@ def _prune_login_fails(now: int):
         for k in heapq.nsmallest(
                 excess, LOGIN_FAILS, key=lambda k: LOGIN_FAILS[k][1]):
             del LOGIN_FAILS[k]
+
+
+@app.get("/healthz")
+async def healthz():
+    try:
+        db.conn().execute("SELECT 1").fetchone()
+    except Exception:
+        # 探针仅公开状态，连接或查询失败时不泄露数据库路径和异常细节。
+        return JSONResponse({"status": "error"}, status_code=503)
+    return JSONResponse({"status": "ok"})
 
 
 @app.get("/login")

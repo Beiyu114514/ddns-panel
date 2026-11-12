@@ -1,6 +1,7 @@
 import asyncio
 import ipaddress
 import re
+import sqlite3
 import time
 from pathlib import Path
 
@@ -56,7 +57,7 @@ def _must_not_run(*args, **kwargs):
 
 
 @pytest.mark.parametrize("url, status, html", [
-    ("/login", 200, True), ("/settings", 303, False),
+    ("/login", 200, True), ("/healthz", 200, False), ("/settings", 303, False),
     ("/static/style.css", 200, False), ("/static/missing.js", 404, False),
 ])
 def test_security_headers_cover_pages_redirects_and_static(url, status, html):
@@ -67,6 +68,49 @@ def test_security_headers_cover_pages_redirects_and_static(url, status, html):
         assert response.headers[name] == value
     assert (response.headers.get("cache-control") == "no-store") is (not url.startswith("/static/"))
     assert (CSRF_COOKIE in response.cookies) is html
+
+
+def test_healthz_is_public_and_only_exposes_status():
+    client = TestClient(main.app, base_url="https://testserver")
+    response = client.get("/healthz", follow_redirects=False)
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert "location" not in response.headers
+    assert not response.cookies
+
+
+@pytest.mark.parametrize("failure_at", ["connect", "execute", "fetchone"])
+def test_healthz_database_errors_return_503_with_security_headers(monkeypatch, failure_at):
+    def broken(*args):
+        raise sqlite3.OperationalError("private /srv/data/ddns.db details")
+
+    class Connection:
+        def execute(self, sql):
+            assert sql == "SELECT 1"
+            if failure_at == "execute":
+                broken()
+            return self
+
+        def fetchone(self):
+            broken()
+
+    monkeypatch.setattr(main.db, "conn", broken if failure_at == "connect" else Connection)
+    client = TestClient(main.app, base_url="https://testserver")
+    response = client.get("/healthz", follow_redirects=False)
+    assert response.status_code == 503
+    assert response.json() == {"status": "error"}
+    assert not response.cookies
+    for name, value in HEADERS.items():
+        assert response.headers[name] == value
+
+
+def test_healthz_is_absent_from_pages(auth_client):
+    for url in ("/", "/settings", "/domain/new"):
+        response = auth_client.get(url)
+        assert response.status_code == 200
+        assert "/healthz" not in response.text
+    client = TestClient(main.app, base_url="https://testserver")
+    assert "/healthz" not in client.get("/login").text
 
 
 @pytest.mark.parametrize("status", [400, 403, 404, 422, 500])
