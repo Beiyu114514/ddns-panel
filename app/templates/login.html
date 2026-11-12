@@ -12,7 +12,7 @@
     {% if error %}<div class="flash bad" id="login-error" role="alert">{{ error }}</div>{% endif %}
     <form method="post" action="/login" class="form" data-pending="登录中…">
       <label for="password">密码</label>
-      <input id="password" type="password" name="password" required
+      <input id="password" type="password" name="password" maxlength="1024" required
              autocomplete="current-password" autocapitalize="off"
              autocorrect="off" spellcheck="false"
              {% if error %}aria-invalid="true" aria-describedby="login-error"{% endif %}>

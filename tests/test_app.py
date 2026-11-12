@@ -297,7 +297,7 @@ def test_password_field_error_is_next_to_field(auth_client):
     assert resp.status_code == 400
     assert 'id="password-error"' in resp.text
     assert 'aria-invalid="true"' in resp.text
-    assert "密码至少 6 位" in resp.text
+    assert "密码至少 8 位" in resp.text
 
 
 def test_login_error_marks_password_invalid():

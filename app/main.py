@@ -28,6 +28,33 @@ from .util import (IP_PALETTE_SIZE, fmt_ago, fmt_dur, fmt_empty, fmt_rtt,
 BASE = os.path.dirname(os.path.abspath(__file__))
 COOKIE = "ddns_session"
 FLASH_COOKIE = "ddns_flash"
+PASSWORD_MAX_LENGTH = 1024
+LOGIN_BODY_MAX_BYTES = 16 * 1024
+SCRYPT_SEMAPHORE = asyncio.Semaphore(4)
+
+
+class _ScryptBusy(Exception):
+    pass
+
+
+async def _run_scrypt(func, *args):
+    # 同一事件循环内，检查和立即 acquire 之间不会让出执行权；满额直接拒绝，
+    # 避免为分布式登录洪水创建无界等待队列。
+    semaphore = SCRYPT_SEMAPHORE
+    if semaphore.locked():
+        raise _ScryptBusy
+    await semaphore.acquire()
+    task = asyncio.create_task(asyncio.to_thread(func, *args))
+
+    def finished(done):
+        # 取消 HTTP 请求不能停止线程里的 scrypt，必须等线程结束才归还名额，
+        # 否则反复断开请求即可突破内存/CPU 并发上限。
+        semaphore.release()
+        if not done.cancelled():
+            done.exception()  # 请求取消后仍消费线程异常，避免未处理任务告警。
+
+    task.add_done_callback(finished)
+    return await asyncio.shield(task)
 
 
 def _cookie_secure() -> bool:
@@ -204,6 +231,11 @@ def _client_ip(request: Request) -> str:
     # 否则短链/伪造链会让客户端自己填的条目成为限速 key
     if not all(_is_trusted_hop(p) for p in chain[idx + 1:]):
         return peer
+    try:
+        ipaddress.ip_address(chain[idx])
+    except ValueError:
+        # 垃圾 XFF 值不能成为可任意轮换的限速 key；链不合法时按 TCP 对端计数。
+        return peer
     return chain[idx]
 
 
@@ -275,13 +307,27 @@ def _login_error(request: Request, message: str, status: int = 400):
     # 登录失败留在当前页原位提示，不把错误塞进 URL（A11），也避免刷新丢状态
     return templates.TemplateResponse(request, "login.html", {
         "hide_nav": True, "error": message, "cookie_secure": COOKIE_SECURE,
-    }, status_code=status)
+    }, status_code=status, headers={"Retry-After": "60"} if status == 429 else None)
 
 
 @app.post("/login")
 async def login(request: Request):
+    # 在读取表单之前拒绝明显过大的请求，避免先分配大字段再进入密码校验。
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            size = int(content_length)
+        except ValueError:
+            return _login_error(request, "请求长度无效")
+        if size < 0:
+            return _login_error(request, "请求长度无效")
+        if size > LOGIN_BODY_MAX_BYTES:
+            return _login_error(request, "登录请求过大", 413)
     form = await request.form()
     pw = str(form.get("password", ""))
+    # chunked 请求没有 Content-Length，仍须在任何 scrypt 运算之前检查字符数。
+    if len(pw) > PASSWORD_MAX_LENGTH:
+        return _login_error(request, f"密码不能超过 {PASSWORD_MAX_LENGTH} 位")
     ip = _rate_limit_key(_client_ip(request))
     now = int(time.time())
     _prune_login_fails(now)
@@ -298,11 +344,21 @@ async def login(request: Request):
     if pending > 5:
         LOGIN_FAILS[ip] = (pending, now + 60, now)
         return _login_error(request, "尝试次数过多，请稍后再试", 429)
+    previous = LOGIN_FAILS.get(ip)
     LOGIN_FAILS[ip] = (pending, 0, now)
     # 快照在本请求内保持一致：hash 与 sign 用的 secret 都取自动作前的同一时刻，
     # 否则登录与改密码重叠时会用新 secret 签出本应失效的旧密码会话
     stored_hash = db.get_setting("password_hash", "")
-    ok = await asyncio.to_thread(db.verify_password, pw, stored_hash)
+    try:
+        ok = await _run_scrypt(db.verify_password, pw, stored_hash)
+    except _ScryptBusy:
+        # 容量不足尚未验证密码，不应消耗该 IP 的失败次数；拒绝路径没有 await，
+        # 此处恢复的占位不会覆盖其他请求的新计数。
+        if previous is None:
+            LOGIN_FAILS.pop(ip, None)
+        else:
+            LOGIN_FAILS[ip] = previous
+        return _login_error(request, "登录繁忙，请稍后再试", 429)
     if ok and stored_hash == db.get_setting("password_hash", ""):
         LOGIN_FAILS.pop(ip, None)
         exp = now + 30 * 86400
@@ -871,16 +927,29 @@ async def settings_page(request: Request):
 async def settings_password(request: Request):
     form = await request.form()
     p1, p2 = str(form.get("password", "")), str(form.get("password2", ""))
-    if len(p1) < 6:
+    if len(p1) > PASSWORD_MAX_LENGTH or len(p2) > PASSWORD_MAX_LENGTH:
+        field = "password" if len(p1) > PASSWORD_MAX_LENGTH else "password2"
         return _settings_render(request, error_form="password",
-                                errors={"password": "密码至少 6 位"},
+                                errors={field: f"密码不能超过 {PASSWORD_MAX_LENGTH} 位"},
+                                status_code=400)
+    if len(p1) < 8:
+        return _settings_render(request, error_form="password",
+                                errors={"password": "密码至少 8 位"},
                                 status_code=400)
     if p1 != p2:
         return _settings_render(request, error_form="password",
                                 errors={"password2": "两次输入的密码不一致"},
                                 status_code=400)
+    try:
+        password_hash = await _run_scrypt(db.hash_password, p1)
+    except _ScryptBusy:
+        response = _settings_render(request, error_form="password",
+                                    errors={"password": "登录繁忙，请稍后再试"},
+                                    status_code=429)
+        response.headers["Retry-After"] = "60"
+        return response
     db.set_settings({
-        "password_hash": await asyncio.to_thread(db.hash_password, p1),
+        "password_hash": password_hash,
         # 与 hash 同一事务轮换，确保不会出现“密码已改但旧 cookie 仍有效”的中间态
         "auth_secret": secrets.token_hex(32),
     })

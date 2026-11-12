@@ -86,14 +86,14 @@
   {% endif %}
   <form method="post" action="/settings/password" class="form narrow" data-pending="修改中…">
     <label for="password">新密码</label>
-    <input id="password" name="password" type="password" minlength="6" required
+    <input id="password" name="password" type="password" minlength="8" maxlength="1024" required
            autocomplete="new-password"
            {% if errors.get('password') %}aria-invalid="true" aria-describedby="password-error password-hint"{% else %}aria-describedby="password-hint"{% endif %}>
     {% if errors.get('password') %}<p class="field-error" id="password-error">{{ errors.password }}</p>{% endif %}
-    <p id="password-hint" class="hint">至少 6 位。修改后所有设备都需要重新登录。</p>
+    <p id="password-hint" class="hint">8–1024 位。修改后所有设备都需要重新登录。</p>
 
     <label for="password2">再次输入</label>
-    <input id="password2" name="password2" type="password" minlength="6" required
+    <input id="password2" name="password2" type="password" minlength="8" maxlength="1024" required
            autocomplete="new-password"
            {% if errors.get('password2') %}aria-invalid="true" aria-describedby="password2-error"{% endif %}>
     {% if errors.get('password2') %}<p class="field-error" id="password2-error">{{ errors.password2 }}</p>{% endif %}
