@@ -362,16 +362,12 @@ def _build_chart(hours: int = 24) -> dict:
         - datetime.timedelta(hours=hours - 1)
     start = int(h0.timestamp())
     b_checks, b_fail, b_changes = [0] * hours, [0] * hours, [0] * hours
-    for c in db.checks_since(start):
-        i = int((datetime.datetime.fromtimestamp(c["ts"]) - h0).total_seconds() // 3600)
-        if 0 <= i < hours:
-            b_checks[i] += 1
-            if c["status"] != "ok":
-                b_fail[i] += 1
-    for c in db.changes_ts_since(start):
-        i = int((datetime.datetime.fromtimestamp(c["ts"]) - h0).total_seconds() // 3600)
-        if 0 <= i < hours:
-            b_changes[i] += 1
+    check_groups, change_groups = db.chart_counts(start, hours)
+    for row in check_groups:
+        b_checks[row["bucket"]] = row["total"]
+        b_fail[row["bucket"]] = row["fail"] or 0
+    for row in change_groups:
+        b_changes[row["bucket"]] = row["total"]
 
     plot_w = CHART_W - CHART_PAD_L - CHART_PAD_R
     colw = plot_w / hours
@@ -468,8 +464,9 @@ async def index(request: Request):
         hour=0, minute=0, second=0, microsecond=0).timestamp())
     rows = []
     abnormal_rows = []
-    for d in db.list_domains():
-        last = db.last_check(d["id"])
+    for d in db.overview_domains(now - 7 * 86400, now - 30 * 86400):
+        last = (dict(id=d["last_id"], ts=d["last_ts"], status=d["last_status"],
+                     ip=d["last_check_ip"]) if d["last_id"] is not None else None)
         if not d["enabled"]:
             state = "disabled"
         elif last and last["status"] != "ok":
@@ -482,10 +479,10 @@ async def index(request: Request):
             "d": d,
             "last": last,
             "state": state,
-            "cur": db.current_ip(d["id"]),
-            "stable": fmt_dur(now - (db.last_activity_ts(d["id"]) or d["created_at"])),
-            "c7": db.change_count(d["id"], now - 7 * 86400),
-            "c30": db.change_count(d["id"], now - 30 * 86400),
+            "cur": d["cur"],
+            "stable": fmt_dur(now - (d["activity"] or d["created_at"])),
+            "c7": d["c7"],
+            "c30": d["c30"],
         }
         rows.append(row)
         if state == "bad":
@@ -495,16 +492,12 @@ async def index(request: Request):
     abnormal_rows.sort(key=lambda r: r["last"]["ts"], reverse=True)
 
     totals = db.count_domains()
-    v6 = sum(1 for r in rows if r["d"]["rrtype"] == "AAAA")
     stats = db.check_stats_since(today_start)
     total, ok = stats["total"] or 0, stats["ok"] or 0
-    changes_all = db.count_all_changes()
     return templates.TemplateResponse(request, "index.html", {
         "rows": rows,
         "overview": {"total": totals["total"], "enabled": totals["enabled"],
                      "disabled": totals["total"] - totals["enabled"],
-                     "v4": totals["total"] - v6, "v6": v6,
-                     "changes_all": changes_all,
                      "c7": db.changes_count_since(now - 7 * 86400),
                      "c30": db.changes_count_since(now - 30 * 86400)},
         "today": {"total": total, "ok": ok, "fail": stats["fail"] or 0,
@@ -513,8 +506,6 @@ async def index(request: Request):
         "abnormal_count": len(abnormal_rows),
         "abnormal_rows": abnormal_rows[:5],
         "recent_bad": db.global_last_bad_check(),
-        "any_enabled": totals["enabled"] > 0,
-        "total_changes": changes_all,
         "chart": _build_chart() if totals["total"] else None,
     })
 

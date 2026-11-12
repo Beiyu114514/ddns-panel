@@ -4,6 +4,8 @@
 
 本项目用于观察 DDNS 解析结果，不负责向 DNS 服务商更新记录。
 
+SQLite 会在启动时为检查时间、检查时间与状态、跨域名变动时间及未通知变动创建索引。首页图表由 SQL 按小时聚合，域名状态在单条汇总查询中读取；已有数据库升级时会通过 `CREATE INDEX IF NOT EXISTS` 自动补齐索引。
+
 ## Docker Compose 部署
 
 需要 Docker 与 Docker Compose 插件。进入仓库后，先准备持久化目录，再启动：

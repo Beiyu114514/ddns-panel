@@ -58,6 +58,9 @@ CREATE INDEX IF NOT EXISTS idx_changes_dom_ts_id ON changes (domain_id, ts DESC,
 -- 图例时长聚合只读 (ts, new_ip)，覆盖索引避免回表
 CREATE INDEX IF NOT EXISTS idx_changes_dom_ts_ip ON changes (domain_id, ts, new_ip);
 CREATE INDEX IF NOT EXISTS idx_checks_ts ON checks (ts);
+CREATE INDEX IF NOT EXISTS idx_checks_ts_status ON checks (ts, status);
+CREATE INDEX IF NOT EXISTS idx_changes_ts ON changes (ts);
+CREATE INDEX IF NOT EXISTS idx_changes_pending ON changes (domain_id, ts) WHERE notified = 0;
 """
 
 
@@ -297,10 +300,21 @@ def check_stats_since(since: int):
     ).fetchone()
 
 
-def checks_since(since: int):
-    return conn().execute(
-        "SELECT ts, status FROM checks WHERE ts >= ?", (since,)
+def chart_counts(since: int, hours: int):
+    """按图表小时桶聚合，避免将窗口内的检查明细全部传到 Python。"""
+    c = conn()
+    checks = c.execute(
+        "SELECT CAST((ts - ?) / 3600 AS INTEGER) AS bucket, COUNT(*) AS total, "
+        "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) AS fail "
+        "FROM checks WHERE ts >= ? AND ts < ? GROUP BY bucket",
+        (since, since, since + hours * 3600),
     ).fetchall()
+    changes = c.execute(
+        "SELECT CAST((ts - ?) / 3600 AS INTEGER) AS bucket, COUNT(*) AS total "
+        "FROM changes WHERE ts >= ? AND ts < ? AND old_ip IS NOT NULL GROUP BY bucket",
+        (since, since, since + hours * 3600),
+    ).fetchall()
+    return checks, changes
 
 
 def cleanup_checks(days: int):
@@ -328,15 +342,20 @@ def pending_change(domain_id: int):
     连续多次变动合并成一条通知（最早的旧 IP → 最新的新 IP），
     避免重启或发送失败后通知里的"旧 IP"变成用户从未见过的中间值。
     """
-    rows = conn().execute(
-        "SELECT id, ts, old_ip, new_ip FROM changes "
-        "WHERE domain_id = ? AND notified = 0 AND new_ip IS NOT NULL "
-        "ORDER BY ts ASC, id ASC",
-        (domain_id,),
-    ).fetchall()
-    if not rows:
+    row = conn().execute(
+        "SELECT (SELECT old_ip FROM changes WHERE domain_id = ? AND notified = 0 "
+        "AND new_ip IS NOT NULL ORDER BY ts ASC, id ASC LIMIT 1) AS old_ip, "
+        "(SELECT ts FROM changes WHERE domain_id = ? AND notified = 0 "
+        "AND new_ip IS NOT NULL ORDER BY ts ASC, id ASC LIMIT 1) AS first_ts, "
+        "(SELECT new_ip FROM changes WHERE domain_id = ? AND notified = 0 "
+        "AND new_ip IS NOT NULL ORDER BY ts DESC, id DESC LIMIT 1) AS new_ip, "
+        "(SELECT id FROM changes WHERE domain_id = ? AND notified = 0 "
+        "AND new_ip IS NOT NULL ORDER BY ts DESC, id DESC LIMIT 1) AS last_id",
+        (domain_id, domain_id, domain_id, domain_id),
+    ).fetchone()
+    if row["first_ts"] is None:
         return None
-    return rows[0]["old_ip"], rows[-1]["new_ip"], rows[0]["ts"], rows[-1]["id"]
+    return row["old_ip"], row["new_ip"], row["first_ts"], row["last_id"]
 
 
 def mark_changes_notified(domain_id: int, up_to_id: int | None = None):
@@ -475,23 +494,28 @@ def changes_count_since(since: int) -> int:
     ).fetchone()["n"]
 
 
-def changes_ts_since(since: int):
-    return conn().execute(
-        "SELECT ts FROM changes WHERE ts >= ? AND old_ip IS NOT NULL", (since,)
-    ).fetchall()
-
-
-def count_all_changes() -> int:
-    return conn().execute(
-        "SELECT COUNT(*) AS n FROM changes WHERE old_ip IS NOT NULL"
-    ).fetchone()["n"]
-
-
 def count_domains() -> dict:
     row = conn().execute(
         "SELECT COUNT(*) AS total, SUM(enabled) AS enabled FROM domains"
     ).fetchone()
     return {"total": row["total"] or 0, "enabled": row["enabled"] or 0}
+
+
+def overview_domains(since7: int, since30: int):
+    """一次读取首页所需域名状态字段，避免每个域名重复发起五条查询。"""
+    return conn().execute(
+        "SELECT d.*, "
+        "(SELECT c.id FROM checks c WHERE c.domain_id = d.id ORDER BY c.ts DESC, c.id DESC LIMIT 1) AS last_id, "
+        "(SELECT c.ts FROM checks c WHERE c.domain_id = d.id ORDER BY c.ts DESC, c.id DESC LIMIT 1) AS last_ts, "
+        "(SELECT c.status FROM checks c WHERE c.domain_id = d.id ORDER BY c.ts DESC, c.id DESC LIMIT 1) AS last_status, "
+        "(SELECT c.ip FROM checks c WHERE c.domain_id = d.id ORDER BY c.ts DESC, c.id DESC LIMIT 1) AS last_check_ip, "
+        "(SELECT new_ip FROM changes WHERE domain_id = d.id ORDER BY ts DESC, id DESC LIMIT 1) AS cur, "
+        "(SELECT MAX(ts) FROM changes WHERE domain_id = d.id) AS activity, "
+        "(SELECT COUNT(*) FROM changes WHERE domain_id = d.id AND ts >= ? AND old_ip IS NOT NULL) AS c7, "
+        "(SELECT COUNT(*) FROM changes WHERE domain_id = d.id AND ts >= ? AND old_ip IS NOT NULL) AS c30 "
+        "FROM domains d ORDER BY d.name",
+        (since7, since30),
+    ).fetchall()
 
 
 def last_change_before(domain_id: int, ts: int):
@@ -593,19 +617,24 @@ def change_durations(domain_id: int, since: int, after_id: int | None,
     采样只影响时间线节点；此查询始终覆盖窗口内全部变动记录。
     """
     if after_id is None:
+        boundary = "ts < ?"
         win = "ts >= ?"
-        params = [domain_id, now, now, since]
+        params = [domain_id, since, domain_id, since, now, now]
     else:
+        boundary = "(ts < ? OR (ts = ? AND id <= ?))"
         win = "(ts > ? OR (ts = ? AND id > ?))"
-        params = [domain_id, now, now, since, since, after_id]
+        params = [domain_id, since, since, after_id, domain_id, since, since, after_id,
+                  now, now]
     rows = conn().execute(
-        "WITH seq AS ("
-        "  SELECT id, ts, new_ip, LEAD(ts) OVER ("
-        "    PARTITION BY domain_id ORDER BY ts, id) AS next_ts"
-        "  FROM changes WHERE domain_id = ? AND new_ip IS NOT NULL"
-        ") SELECT new_ip, COUNT(*) AS n, "
+        "WITH base AS (SELECT id, ts, new_ip FROM changes WHERE domain_id = ? "
+        "AND new_ip IS NOT NULL AND " + boundary + " ORDER BY ts DESC, id DESC LIMIT 1), "
+        "window_rows AS (SELECT id, ts, new_ip, 1 AS in_window FROM changes WHERE domain_id = ? "
+        "AND new_ip IS NOT NULL AND " + win + "), "
+        "seq AS (SELECT id, ts, new_ip, in_window, LEAD(ts) OVER (ORDER BY ts, id) AS next_ts "
+        "FROM (SELECT id, ts, new_ip, 0 AS in_window FROM base UNION ALL SELECT * FROM window_rows)) "
+        "SELECT new_ip, SUM(in_window) AS n, "
         "SUM(CASE WHEN next_ts IS NULL OR next_ts > ? THEN ? - ts ELSE next_ts - ts END) AS dur "
-        f"FROM seq WHERE {win} GROUP BY new_ip ORDER BY dur DESC, new_ip",
+        "FROM seq WHERE in_window = 1 GROUP BY new_ip ORDER BY dur DESC, new_ip",
         params,
     ).fetchall()
     return [{"ip": r["new_ip"], "rows": r["n"], "dur": max(0, r["dur"] or 0)}
