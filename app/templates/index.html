@@ -64,6 +64,7 @@
       {{ state_badge(r.state, r.last) }}
       <span class="muted">{{ r.last.ts|fmt_ago }}{% if r.last.error %} · {{ r.last.error }}{% endif %}</span>
       <form method="post" action="/domain/{{ r.d.id }}/check" class="inline" data-pending="检查中…">
+        <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
         <button class="btn sm" type="submit">立即检查</button>
       </form>
     </li>
@@ -114,6 +115,7 @@
           <td>
             <div class="row-actions">
               <form method="post" action="/domain/{{ r.d.id }}/check" class="inline" data-pending="检查中…">
+                <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
                 <button class="btn sm" type="submit" {% if not r.d.enabled %}disabled title="监控项已停用"{% endif %}>立即检查</button>
               </form>
               <a class="btn sm" href="/domain/{{ r.d.id }}#settings">设置</a>
@@ -140,6 +142,7 @@
       </dl>
       <div class="row-actions">
         <form method="post" action="/domain/{{ r.d.id }}/check" class="inline" data-pending="检查中…">
+          <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
           <button class="btn sm" type="submit" {% if not r.d.enabled %}disabled{% endif %}>立即检查</button>
         </form>
         <a class="btn sm" href="/domain/{{ r.d.id }}#settings">设置</a>
@@ -231,41 +234,6 @@
 
 {% block scripts %}
 {% if chart %}
-<script>
-(function () {
-  var svg = document.getElementById('chart-svg');
-  if (!svg) return;
-  var hits = Array.prototype.slice.call(svg.querySelectorAll('.chart-hit'));
-  var cursor = document.getElementById('chart-cursor');
-  var tip = document.getElementById('chart-tip');
-  if (!hits.length || !cursor || !tip) return;
-  var idx = hits.length - 1;
-
-  function show(i) {
-    idx = (i + hits.length) % hits.length;
-    var rect = hits[idx].querySelector('rect');
-    cursor.setAttribute('x', rect.getAttribute('x'));
-    cursor.setAttribute('width', rect.getAttribute('width'));
-    tip.textContent = hits[idx].getAttribute('data-label');
-  }
-
-  hits.forEach(function (g, i) {
-    g.addEventListener('pointerenter', function () { show(i); });
-  });
-  svg.addEventListener('focus', function () { show(idx); });
-  svg.addEventListener('keydown', function (e) {
-    var next = null;
-    if (e.key === 'ArrowLeft') next = idx - 1;
-    else if (e.key === 'ArrowRight') next = idx + 1;
-    else if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = hits.length - 1;
-    if (next !== null) {
-      e.preventDefault();
-      show(next);
-    }
-  });
-  show(idx);
-})();
-</script>
+<script src="/static/chart.js" defer></script>
 {% endif %}
 {% endblock %}

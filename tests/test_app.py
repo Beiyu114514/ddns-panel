@@ -198,6 +198,7 @@ def test_token_is_never_echoed_and_blank_keeps_old_value(auth_client):
     assert "SECRET-TOKEN-XYZ" not in html
     assert 'id="tg_token"' in html
     resp = auth_client.post("/settings/notify", data={
+        "_csrf": auth_client.cookies.get("ddns_csrf"),
         "tg_enabled": "on", "notify_on_change": "on", "notify_on_fail": "on",
         "tg_token": "", "tg_chat": "12345", "fail_cooldown_min": "60",
         "change_cooldown_min": "0",
@@ -208,6 +209,7 @@ def test_token_is_never_echoed_and_blank_keeps_old_value(auth_client):
 
 def test_flash_cookie_is_ascii_and_consumed_once(auth_client):
     resp = auth_client.post("/settings/notify", data={
+        "_csrf": auth_client.cookies.get("ddns_csrf"),
         "tg_chat": "1", "fail_cooldown_min": "60", "change_cooldown_min": "0",
     }, follow_redirects=False)
     cookie = resp.headers.get("set-cookie", "")
@@ -221,6 +223,7 @@ def test_flash_cookie_is_ascii_and_consumed_once(auth_client):
 
 def test_create_validation_keeps_draft(auth_client):
     resp = auth_client.post("/domain/new", data={
+        "_csrf": auth_client.cookies.get("ddns_csrf"),
         "name": "bad name", "rrtype": "A", "resolver": "1.1.1.1",
         "interval_sec": "300", "note": "保留我",
     }, follow_redirects=False)
@@ -283,7 +286,8 @@ def test_mobile_input_attributes_and_first_screen_order(auth_client):
 
 
 def test_settings_data_field_error(auth_client):
-    resp = auth_client.post("/settings/data", data={"retention_days": "999"},
+    resp = auth_client.post("/settings/data", data={
+        "_csrf": auth_client.cookies.get("ddns_csrf"), "retention_days": "999"},
                             follow_redirects=False)
     assert resp.status_code == 400
     assert 'aria-invalid="true"' in resp.text
@@ -293,6 +297,7 @@ def test_settings_data_field_error(auth_client):
 
 def test_password_field_error_is_next_to_field(auth_client):
     resp = auth_client.post("/settings/password", data={
+        "_csrf": auth_client.cookies.get("ddns_csrf"),
         "password": "123", "password2": "123"}, follow_redirects=False)
     assert resp.status_code == 400
     assert 'id="password-error"' in resp.text

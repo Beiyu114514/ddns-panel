@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import sys
 import tempfile
@@ -37,4 +38,20 @@ def auth_client(client):
         password = f.read().strip()
     resp = client.post("/login", data={"password": password}, follow_redirects=False)
     assert resp.status_code == 303
+    client.get("/settings")  # 与浏览器一样，先取表单页建立 CSRF cookie。
     return client
+
+
+@pytest.fixture
+def private_auth_db(tmp_path, monkeypatch):
+    from app import main
+
+    # 改密会删除初始密码并轮换会话密钥，独立库避免污染整个测试会话。
+    monkeypatch.setenv("DDNS_DATA_DIR", str(tmp_path / "auth-data"))
+    spec = importlib.util.spec_from_file_location("isolated_auth_db", db.__file__)
+    isolated = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(isolated)
+    isolated.init()
+    monkeypatch.setattr(main, "db", isolated)
+    yield isolated
+    isolated.conn().close()

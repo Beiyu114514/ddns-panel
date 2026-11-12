@@ -17,6 +17,7 @@
 
 <section class="card">
   <form method="post" action="/domain/new" class="form narrow" data-pending="创建中…">
+    <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
     <label for="name">域名</label>
     <input id="name" name="name" value="{{ draft.name }}" required
            autocomplete="off" autocorrect="off" spellcheck="false" autocapitalize="none" inputmode="url"

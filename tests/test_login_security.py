@@ -1,6 +1,6 @@
 import asyncio
-import importlib.util
 import ipaddress
+from pathlib import Path
 import threading
 import time
 from time import perf_counter
@@ -19,19 +19,6 @@ def isolated_login_state(monkeypatch):
     monkeypatch.setattr(main, "SCRYPT_SEMAPHORE", asyncio.Semaphore(4))
 
 
-@pytest.fixture
-def private_auth_db(tmp_path, monkeypatch):
-    # 改密会删除初始密码并轮换会话密钥，独立库避免污染整个测试会话。
-    monkeypatch.setenv("DDNS_DATA_DIR", str(tmp_path / "auth-data"))
-    spec = importlib.util.spec_from_file_location("isolated_auth_db", db.__file__)
-    isolated = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(isolated)
-    isolated.init()
-    monkeypatch.setattr(main, "db", isolated)
-    yield isolated
-    isolated.conn().close()
-
-
 def _must_not_run_scrypt(*args):
     pytest.fail("非法输入不应执行 scrypt")
 
@@ -40,6 +27,7 @@ def _signed_client():
     client = TestClient(main.app, base_url="https://testserver")
     exp = int(time.time()) + 3600
     client.cookies.set(main.COOKIE, f"{exp}.{main._sign(exp)}")
+    client.get("/settings")
     return client
 
 
@@ -168,8 +156,6 @@ def test_cancelled_request_holds_slot_until_thread_finishes(monkeypatch):
 
 
 def test_ip_rate_limit_has_retry_after_and_preserves_concurrent_login():
-    from pathlib import Path
-
     password = (Path(main.db.DATA_DIR) / "initial_password.txt").read_text().strip()
 
     async def run():
@@ -203,7 +189,10 @@ def test_ip_rate_limit_has_retry_after_and_preserves_concurrent_login():
 def test_invalid_new_password_skips_scrypt(private_auth_db, monkeypatch,
                                          password, password2, message):
     monkeypatch.setattr(main.db, "hash_password", _must_not_run_scrypt)
-    response = _signed_client().post("/settings/password", data={
+    client = _signed_client()
+    response = client.post("/settings/password", data={
+        "_csrf": client.cookies.get("ddns_csrf"),
+        "current_password": (Path(private_auth_db.DATA_DIR) / "initial_password.txt").read_text().strip(),
         "password": password, "password2": password2,
     })
     assert response.status_code == 400
@@ -215,7 +204,10 @@ def test_eight_character_new_password_and_legacy_login(private_auth_db):
     client = TestClient(main.app, base_url="https://testserver")
     assert client.post("/login", data={"password": "123456"}, follow_redirects=False).status_code == 303
     old_secret = private_auth_db.get_setting("auth_secret")
+    client.get("/settings")
     response = client.post("/settings/password", data={
+        "_csrf": client.cookies.get("ddns_csrf"),
+        "current_password": "123456",
         "password": "12345678", "password2": "12345678",
     }, follow_redirects=False)
     assert response.status_code == 303
@@ -235,6 +227,8 @@ def test_password_maximum_boundary_and_frontend_constraints(private_auth_db):
     assert 'minlength=' not in login
     password = "密" * 1024
     response = client.post("/settings/password", data={
+        "_csrf": client.cookies.get("ddns_csrf"),
+        "current_password": (Path(private_auth_db.DATA_DIR) / "initial_password.txt").read_text().strip(),
         "password": password, "password2": password,
     }, follow_redirects=False)
     assert response.status_code == 303
@@ -245,7 +239,10 @@ def test_password_change_shares_global_scrypt_limit(private_auth_db, monkeypatch
     monkeypatch.setattr(main.db, "hash_password", _must_not_run_scrypt)
     monkeypatch.setattr(main, "SCRYPT_SEMAPHORE", asyncio.Semaphore(0))
     old_hash = private_auth_db.get_setting("password_hash")
-    response = _signed_client().post("/settings/password", data={
+    client = _signed_client()
+    response = client.post("/settings/password", data={
+        "_csrf": client.cookies.get("ddns_csrf"),
+        "current_password": (Path(private_auth_db.DATA_DIR) / "initial_password.txt").read_text().strip(),
         "password": "12345678", "password2": "12345678",
     })
     assert response.status_code == 429

@@ -136,7 +136,7 @@ def test_login_warning_matches_secure_mode_on_errors(monkeypatch, secure):
 
 
 def test_flash_set_by_handler_survives_middleware(auth_client):
-    data = {"tg_chat": "1", "fail_cooldown_min": "60", "change_cooldown_min": "0"}
+    data = {"_csrf": auth_client.cookies.get("ddns_csrf"), "tg_chat": "1", "fail_cooldown_min": "60", "change_cooldown_min": "0"}
     first = auth_client.post("/settings/notify", data=data, follow_redirects=False)
     assert any(c.startswith("ddns_flash=")
                for c in first.headers.get_list("set-cookie"))
@@ -253,7 +253,9 @@ def test_invalid_domain_ids_redirect_to_html_home(auth_client, bad_id, suffix, m
     monkeypatch.setattr(db, "get_domain", unexpected_db_access)
     monkeypatch.setattr(db, "delete_domain", unexpected_db_access)
     method = "POST" if suffix else "GET"
-    response = auth_client.request(method, f"/domain/{bad_id}{suffix}", follow_redirects=False)
+    response = auth_client.request(method, f"/domain/{bad_id}{suffix}",
+                                   data={"_csrf": auth_client.cookies.get("ddns_csrf")} if suffix else None,
+                                   follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/"
     home = auth_client.get(response.headers["location"])

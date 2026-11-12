@@ -19,6 +19,7 @@
   </div>
   <div class="row-actions">
     <form method="post" action="/domain/{{ d.id }}/check" class="inline" data-pending="检查中…">
+      <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
       <button class="btn primary" type="submit" {% if not d.enabled %}disabled title="监控项已停用"{% endif %}>立即检查</button>
     </form>
     <a class="btn" href="#settings">设置</a>
@@ -200,6 +201,7 @@
 <section class="card" id="settings" aria-labelledby="settings-h">
   <h2 id="settings-h">监控设置</h2>
   <form method="post" action="/domain/{{ d.id }}/update" class="form narrow" data-pending="保存中…">
+    <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
     <label for="rrtype">记录类型</label>
     <select id="rrtype" name="rrtype">
       <option value="A" {% if d.rrtype == 'A' %}selected{% endif %}>A（IPv4）</option>
@@ -242,6 +244,7 @@
   <details>
     <summary>删除监控项…</summary>
     <form method="post" action="/domain/{{ d.id }}/delete" class="form" data-pending="删除中…">
+      <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
       <p>确认删除 <strong>{{ d.name }}</strong>？此操作不可撤销。</p>
       <button class="btn danger-solid" type="submit">确认删除</button>
     </form>
@@ -250,29 +253,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-(function () {
-  var track = document.getElementById('tl-track');
-  if (!track) return;
-  var segments = Array.prototype.slice.call(track.querySelectorAll('.tl-seg'));
-  var tip = document.getElementById('tl-tip');
-  if (!segments.length || !tip) return;
-  var idx = 0;
-  function show(i) {
-    idx = (i + segments.length) % segments.length;
-    segments.forEach(function (s) { s.classList.remove('is-active'); });
-    segments[idx].classList.add('is-active');
-    tip.textContent = segments[idx].getAttribute('data-label');
-  }
-  track.addEventListener('focus', function () { show(idx); });
-  track.addEventListener('keydown', function (e) {
-    var next = null;
-    if (e.key === 'ArrowLeft') next = idx - 1;
-    else if (e.key === 'ArrowRight') next = idx + 1;
-    else if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = segments.length - 1;
-    if (next !== null) { e.preventDefault(); show(next); }
-  });
-})();
-</script>
+<script src="/static/timeline.js" defer></script>
 {% endblock %}

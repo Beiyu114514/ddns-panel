@@ -66,10 +66,10 @@ COOKIE_SECURE=false docker compose up -d
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
 | `DDNS_DATA_DIR` | 仓库下的 `data/`；镜像内为 `/app/data` | 数据库、WAL/SHM、初始密码存放目录。自定义时需保证应用用户可写，Docker 还需同步调整环境变量和卷挂载目的路径。 |
-| `TRUSTED_PROXIES` | `172.16.0.0/12` | 可信 TCP 对端 IP/CIDR，逗号分隔；只有来自这些地址的 XFF 才会用于登录限速。空字符串表示完全忽略 XFF。生产应按实际对端缩小范围。 |
+| `TRUSTED_PROXIES` | `172.16.0.0/12` | 可信 TCP 对端 IP/CIDR，逗号分隔；只有来自这些地址的转发头才会用于登录限速与 HTTPS 判定。空字符串表示完全忽略转发头。生产应按实际对端缩小范围。 |
 | `TRUSTED_PROXY_HOPS` | `1` | 可信代理的层数，从 XFF 右侧按固定层数定位客户端；CDN + 本机反代通常为 `2`。 |
 | `TG_PROXY` | 未设置（直连） | Telegram API 的代理，例如 `socks5://192.168.1.1:1080` 或 `http://192.168.1.1:8080`；可在 Compose 的 environment 中配置。 |
-| `COOKIE_SECURE` | `true` | 会话 Cookie 是否要求 HTTPS。`0` / `false` / `no` / `off`（忽略大小写及首尾空格）明确关闭；其他值及空值均保持开启。关闭仅限内网调试。 |
+| `COOKIE_SECURE` | `true` | 会话与 CSRF Cookie 是否要求 HTTPS。`0` / `false` / `no` / `off`（忽略大小写及首尾空格）明确关闭；其他值及空值均保持开启。关闭仅限内网调试。 |
 
 Compose 已透传 `TRUSTED_PROXIES`、`TRUSTED_PROXY_HOPS` 和 `COOKIE_SECURE`，可在仓库 `.env` 或启动命令中设置。`TG_PROXY` 需取消 Compose 中的注释并填写；`DDNS_DATA_DIR` 自定义需自行加入 environment。不要把 Bot Token 写进仓库。
 
@@ -100,7 +100,7 @@ Cloudflare 两层链路要限制源站入口只允许 Cloudflare 回源，并让
 
 ## 密码管理
 
-首次启动将随机密码写入 `data/initial_password.txt`，不会输出到日志。使用自定义数据目录时位置随之变化。登录后在“设置 → 修改密码”填写两次新密码并保存；新密码须为 8–1024 位，会话会失效，需要重新登录，初始密码文件会被删除。登录仅限制最多 1024 位，已有不足 8 位的密码仍可登录。
+首次启动将随机密码写入 `data/initial_password.txt`，不会输出到日志。使用自定义数据目录时位置随之变化。登录后在“设置 → 修改密码”填写当前密码和两次新密码并保存；当前密码错误返回 400 并在字段旁提示，不修改任何设置。新密码须为 8–1024 位；成功后轮换会话签名密钥，所有旧会话失效，需要重新登录，初始密码文件会被删除。登录仅限制最多 1024 位，已有不足 8 位的密码仍可登录。
 
 登录在解析表单前拒绝声明 `Content-Length` 超过 16 KiB 的请求（413）；无此头的 chunked 请求仍在密码校验前检查 1024 位上限，超长密码返回 400。登录验证与改密共用最多 4 个 scrypt 运算名额，满额立即返回 429，不排队；请求取消后名额保留到实际运算结束。分 IP 登录限速和全局满额的 429 响应均带 `Retry-After: 60`，提示稍后重试。XFF 定位出的客户端必须是合法 IPv4/IPv6，链不完整、中间跳不可信或客户端条目无效时均退回 TCP 对端计数。
 
@@ -133,6 +133,20 @@ docker compose up -d ddns-monitor
 ```
 
 重新登录后立即修改密码。本地进程部署同样先停服务、备份，再在虚拟环境下运行上述 Python 代码；必须使用服务相同的 `DDNS_DATA_DIR` 和文件属主。不要在应用运行中单独删除 `password_hash`，也不要只重置 hash 却保留旧 `auth_secret`。
+
+## 浏览器安全
+
+所有响应（包括静态资源、重定向和错误）带 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Permissions-Policy: geolocation=(), microphone=(), camera=()` 与以下 CSP：
+
+```text
+default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'
+```
+
+脚本由本站静态文件加载，禁止内联脚本。`style-src` 保留 `'unsafe-inline'`，因为时间线位置和宽度随数据动态生成内联样式，无法使用固定 hash。认证页面与 HTML 响应使用 `Cache-Control: no-store`；静态资源沿用原有缓存行为。
+
+仅请求本身为 HTTPS，或可信代理链确认 `X-Forwarded-Proto` 为 HTTPS 时，才发送 `Strict-Transport-Security: max-age=31536000; includeSubDomains`。紧邻应用的反代必须覆盖协议头，或由可信代理逐跳追加；追加模式按 `TRUSTED_PROXY_HOPS` 从右侧定位入口协议，忽略额外的客户端前缀。多层链路同时要求 XFF 链完整且中间跳可信；直连 HTTP 的伪造协议头不会开启 HSTS。
+
+已认证的所有 POST 表单使用双提交 CSRF token，并在写库、查 DNS 或发通知之前校验。GET HTML 页面首次生成随机 `ddns_csrf` Cookie（HttpOnly、SameSite=Lax，Secure 跟随 `COOKIE_SECURE`），表单用隐藏字段 `_csrf` 回传，服务端与 Cookie 做常量时间比较。缺失或不匹配返回 403 HTML；刷新页面后重试。使用 curl 等脚本直接 POST 时，现在需要先 GET 表单页保存 Cookie，并将隐藏字段 `_csrf` 原样随表单提交。`/login` 豁免 CSRF：本应用只有单管理员，登录不会提升已有用户权限，且已有分 IP 限速；因此登录不依赖预先获取 token。SameSite=Lax 继续提供额外防护。
 
 ## 数据权限与备份
 

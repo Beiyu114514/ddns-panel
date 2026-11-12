@@ -18,6 +18,7 @@
   </div>
   {% endif %}
   <form id="notify-form" method="post" action="/settings/notify" class="form" data-pending="保存中…">
+    <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
     <label class="check-row" for="tg_enabled">
       <input type="checkbox" id="tg_enabled" name="tg_enabled" {% if s.tg_enabled %}checked{% endif %}>
       <span>启用 Telegram 通知</span>
@@ -85,6 +86,13 @@
   </div>
   {% endif %}
   <form method="post" action="/settings/password" class="form narrow" data-pending="修改中…">
+    <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
+    <label for="current_password">当前密码</label>
+    <input id="current_password" name="current_password" type="password" maxlength="1024" required
+           autocomplete="current-password"
+           {% if errors.get('current_password') %}aria-invalid="true" aria-describedby="current-password-error"{% endif %}>
+    {% if errors.get('current_password') %}<p class="field-error" id="current-password-error">{{ errors.current_password }}</p>{% endif %}
+
     <label for="password">新密码</label>
     <input id="password" name="password" type="password" minlength="8" maxlength="1024" required
            autocomplete="new-password"
@@ -107,6 +115,7 @@
   <div class="alert error" role="alert"><strong>未保存：</strong>{{ errors.retention_days }}</div>
   {% endif %}
   <form method="post" action="/settings/data" class="form narrow" data-pending="保存中…">
+    <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
     <label for="retention_days">检查记录保留天数</label>
     <input id="retention_days" name="retention_days" type="number" min="1" max="365"
            value="{{ s.retention_days }}" required inputmode="numeric"

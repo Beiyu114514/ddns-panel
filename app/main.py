@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import db
+from .middleware import CSRF_COOKIE, SecurityMiddleware
 from .monitor import Monitor, RESOLVERS, resolve_once
 from .notify import send_tg
 from .util import (IP_PALETTE_SIZE, fmt_ago, fmt_dur, fmt_empty, fmt_rtt,
@@ -213,32 +214,67 @@ def _proxy_hops() -> int:
 TRUSTED_PROXY_HOPS = _proxy_hops()
 
 
-def _client_ip(request: Request) -> str:
+def _forwarded_client(request: Request) -> str | None:
     # 直连时用 TCP 对端；仅当对端是可信反代时才解析 XFF。
     # 右侧 TRUSTED_PROXY_HOPS 个条目是可信代理逐跳追加的，其左侧第一个才是客户端。
     # 不能"从右往左跳过所有可信地址"：客户端本身在可信网段时会被跳过，
     # 从而采信它伪造的最左侧条目，限速 key 可被随意轮换。
     peer = request.client.host if request.client else "?"
     if not _is_trusted(peer):
-        return peer
+        return None
     xff = request.headers.get("x-forwarded-for")
     if not xff:
-        return peer
+        return None
     chain = [p.strip() for p in xff.split(",") if p.strip()]
     idx = len(chain) - TRUSTED_PROXY_HOPS
     if idx < 0:
         # XFF 比声明的代理层数还短，头不完整，退回对端地址
-        return peer
+        return None
     # 被跳过的右侧跳数必须是已知代理（本机反代网段或 CDN 回源网段），
     # 否则短链/伪造链会让客户端自己填的条目成为限速 key
     if not all(_is_trusted_hop(p) for p in chain[idx + 1:]):
-        return peer
+        return None
     try:
         ipaddress.ip_address(chain[idx])
     except ValueError:
         # 垃圾 XFF 值不能成为可任意轮换的限速 key；链不合法时按 TCP 对端计数。
-        return peer
+        return None
     return chain[idx]
+
+
+def _client_ip(request: Request) -> str:
+    return _forwarded_client(request) or (request.client.host if request.client else "?")
+
+
+def _is_https(request: Request) -> bool:
+    if request.url.scheme == "https":
+        return True
+    peer = request.client.host if request.client else "?"
+    if not _is_trusted(peer):
+        return False
+    # 多层代理须先验证 XFF 的完整可信链；单层无 XFF 时仍可使用反代覆盖的协议头。
+    if (TRUSTED_PROXY_HOPS > 1 or request.headers.get("x-forwarded-for")) \
+            and _forwarded_client(request) is None:
+        return False
+    protocols = [p.strip().lower() for p in request.headers.get("x-forwarded-proto", "").split(",")]
+    if any(p not in ("http", "https") for p in protocols):
+        return False
+    # 兼容紧邻反代覆盖为单值，以及逐跳追加协议的形式；不采信客户端前缀。
+    if len(protocols) == 1:
+        return protocols[0] == "https"
+    return len(protocols) >= TRUSTED_PROXY_HOPS and protocols[-TRUSTED_PROXY_HOPS] == "https"
+
+
+def _check_csrf(request: Request, form) -> bool:
+    cookie = request.cookies.get(CSRF_COOKIE, "")
+    submitted = form.get("_csrf")
+    # 转成 UTF-8 后比较，恶意非 ASCII 字段也只能得到 403，不会触发类型异常。
+    return bool(cookie) and isinstance(submitted, str) and hmac.compare_digest(
+        submitted.encode("utf-8"), cookie.encode("utf-8"))
+
+
+def _csrf_error(request: Request):
+    return templates.TemplateResponse(request, "error.html", {}, status_code=403)
 
 
 def _rate_limit_key(ip: str) -> str:
@@ -314,6 +350,7 @@ def _login_error(request: Request, message: str, status: int = 400):
 
 @app.post("/login")
 async def login(request: Request):
+    # 单管理员登录不提升已有用户权限，且有 IP 限速；豁免以免登录依赖预先 GET 的 token。
     # 在读取表单之前拒绝明显过大的请求，避免先分配大字段再进入密码校验。
     content_length = request.headers.get("content-length")
     if content_length is not None:
@@ -378,7 +415,10 @@ async def login(request: Request):
 
 
 @app.post("/logout")
-async def logout():
+async def logout(request: Request):
+    form = await request.form()
+    if not _check_csrf(request, form):
+        return _csrf_error(request)
     resp = _flash_redirect("/login", msg="已退出登录")
     resp.delete_cookie(COOKIE, path="/")
     return resp
@@ -762,6 +802,8 @@ async def domain_new(request: Request):
 @app.post("/domain/new")
 async def domain_create(request: Request):
     form = await request.form()
+    if not _check_csrf(request, form):
+        return _csrf_error(request)
     name = _valid_domain(str(form.get("name", "")))
     rrtype = str(form.get("rrtype", "A"))
     if rrtype not in ("A", "AAAA"):
@@ -865,10 +907,12 @@ async def domain_detail(request: Request, domain_id: str, days: int = 30, page: 
 
 @app.post("/domain/{domain_id}/update")
 async def domain_update(request: Request, domain_id: str):
+    form = await request.form()
+    if not _check_csrf(request, form):
+        return _csrf_error(request)
     domain_id = _parse_domain_id(domain_id)
     if domain_id is None:
         return _flash_redirect("/", err="监控项不存在")
-    form = await request.form()
     # 必须在 await 之后再读：表单解析期间另一个请求可能已改过记录类型，
     # 用旧值决定是否重置基线会把新类型的基线写坏
     d = db.get_domain(domain_id)
@@ -896,7 +940,10 @@ async def domain_update(request: Request, domain_id: str):
 
 
 @app.post("/domain/{domain_id}/delete")
-async def domain_delete(domain_id: str):
+async def domain_delete(request: Request, domain_id: str):
+    form = await request.form()
+    if not _check_csrf(request, form):
+        return _csrf_error(request)
     domain_id = _parse_domain_id(domain_id)
     if domain_id is None:
         return _flash_redirect("/", err="监控项不存在")
@@ -906,7 +953,10 @@ async def domain_delete(domain_id: str):
 
 
 @app.post("/domain/{domain_id}/check")
-async def domain_check(domain_id: str):
+async def domain_check(request: Request, domain_id: str):
+    form = await request.form()
+    if not _check_csrf(request, form):
+        return _csrf_error(request)
     domain_id = _parse_domain_id(domain_id)
     if domain_id is None:
         return _flash_redirect("/", err="监控项不存在")
@@ -956,6 +1006,8 @@ async def settings_page(request: Request):
 @app.post("/settings/password")
 async def settings_password(request: Request):
     form = await request.form()
+    if not _check_csrf(request, form):
+        return _csrf_error(request)
     p1, p2 = str(form.get("password", "")), str(form.get("password2", ""))
     if len(p1) > PASSWORD_MAX_LENGTH or len(p2) > PASSWORD_MAX_LENGTH:
         field = "password" if len(p1) > PASSWORD_MAX_LENGTH else "password2"
@@ -970,7 +1022,17 @@ async def settings_password(request: Request):
         return _settings_render(request, error_form="password",
                                 errors={"password2": "两次输入的密码不一致"},
                                 status_code=400)
+    current = str(form.get("current_password", ""))
+    if not current or len(current) > PASSWORD_MAX_LENGTH:
+        return _settings_render(request, error_form="password",
+                                errors={"current_password": "请输入当前密码（最多 1024 位）"},
+                                status_code=400)
+    stored_hash = db.get_setting("password_hash", "")
     try:
+        if not await _run_scrypt(db.verify_password, current, stored_hash):
+            return _settings_render(request, error_form="password",
+                                    errors={"current_password": "当前密码错误"},
+                                    status_code=400)
         password_hash = await _run_scrypt(db.hash_password, p1)
     except _ScryptBusy:
         response = _settings_render(request, error_form="password",
@@ -978,6 +1040,11 @@ async def settings_password(request: Request):
                                     status_code=429)
         response.headers["Retry-After"] = "60"
         return response
+    # scrypt 在线程中执行，期间其他请求可能改密；旧密码校验不能覆盖新凭据。
+    if stored_hash != db.get_setting("password_hash", ""):
+        return _settings_render(request, error_form="password",
+                                errors={"current_password": "密码已变更，请重新登录"},
+                                status_code=400)
     db.set_settings({
         "password_hash": password_hash,
         # 与 hash 同一事务轮换，确保不会出现“密码已改但旧 cookie 仍有效”的中间态
@@ -1039,6 +1106,8 @@ def _notify_echo(form) -> dict:
 @app.post("/settings/notify")
 async def settings_notify(request: Request):
     form = await request.form()
+    if not _check_csrf(request, form):
+        return _csrf_error(request)
     errors, _ = _save_notify(form)
     if errors:
         return _settings_render(request, errors=errors, error_form="notify",
@@ -1049,6 +1118,8 @@ async def settings_notify(request: Request):
 @app.post("/settings/test_tg")
 async def settings_test_tg(request: Request):
     form = await request.form()
+    if not _check_csrf(request, form):
+        return _csrf_error(request)
     errors, _ = _save_notify(form)
     if errors:
         return _settings_render(request, errors=errors, error_form="notify",
@@ -1068,6 +1139,8 @@ async def settings_test_tg(request: Request):
 @app.post("/settings/data")
 async def settings_data(request: Request):
     form = await request.form()
+    if not _check_csrf(request, form):
+        return _csrf_error(request)
     raw = form.get("retention_days")
     days = _int_in(raw, 1, 365)
     if days is None:
@@ -1077,3 +1150,7 @@ async def settings_data(request: Request):
                                 status_code=400)
     db.set_setting("retention_days", str(days))
     return _flash_redirect("/settings", msg="已保存，到期检查记录会自动清理")
+
+
+# 包在 FastAPI 的异常处理中间件外层，确保包括未处理异常的 500 在内都带安全头。
+app = SecurityMiddleware(app, is_https=_is_https, cookie_secure=lambda: COOKIE_SECURE)
