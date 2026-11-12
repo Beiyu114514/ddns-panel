@@ -84,7 +84,13 @@ async def _cleanup_loop():
     while True:
         try:
             days = to_int(db.get_setting("retention_days", "30"), 30)
-            db.cleanup_checks(days)
+            worker = asyncio.create_task(asyncio.to_thread(db.cleanup_checks, days))
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                # 取消协程不能停止 SQLite 线程；退出前等事务结束并关闭其独立连接。
+                await asyncio.gather(worker, return_exceptions=True)
+                raise
         except Exception as e:
             print(f"[cleanup] 检查记录清理失败: {e}", flush=True)
         await asyncio.sleep(6 * 3600)
@@ -95,9 +101,14 @@ async def lifespan(app: FastAPI):
     db.init()
     await monitor.start()
     cleanup = asyncio.create_task(_cleanup_loop())
-    yield
-    await monitor.stop()
-    cleanup.cancel()
+    try:
+        yield
+    finally:
+        try:
+            await monitor.stop()
+        finally:
+            cleanup.cancel()
+            await asyncio.gather(cleanup, return_exceptions=True)
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)

@@ -91,6 +91,19 @@ def _restrict_permissions(path: str, mode: int):
         logger.warning("无法将 %s 权限收紧为 %04o: %s", path, mode, e)
 
 
+def _open_connection(*, check_same_thread: bool = True) -> sqlite3.Connection:
+    c = sqlite3.connect(DB_PATH, check_same_thread=check_same_thread)
+    try:
+        c.row_factory = sqlite3.Row
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA busy_timeout=5000")
+        c.create_function("local_hour_ts", 1, local_hour_ts, deterministic=True)
+    except Exception:
+        c.close()
+        raise
+    return c
+
+
 def conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
@@ -102,11 +115,7 @@ def conn() -> sqlite3.Connection:
         os.close(fd)
         for suffix in ("", "-wal", "-shm"):
             _restrict_permissions(DB_PATH + suffix, 0o600)
-        _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA busy_timeout=5000")
-        _conn.create_function("local_hour_ts", 1, local_hour_ts, deterministic=True)
+        _conn = _open_connection(check_same_thread=False)
         for suffix in ("-wal", "-shm"):
             _restrict_permissions(DB_PATH + suffix, 0o600)
     return _conn
@@ -167,19 +176,24 @@ def _migrate_check_hourly(c: sqlite3.Connection):
     if get_setting("check_hourly_local_backfilled") == tz_key:
         return
     # 旧汇总按 UTC 整点分桶；切换本地整点后必须整表重建，不能沿用旧桶。
-    c.execute("DELETE FROM check_hourly")
-    c.execute(
-        "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) "
-        "SELECT domain_id, local_hour_ts(ts), COUNT(*), "
-        "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) "
-        "FROM checks GROUP BY domain_id, local_hour_ts(ts)"
-    )
-    c.execute(
-        "INSERT INTO settings (key, value) VALUES ('check_hourly_local_backfilled', ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (tz_key,),
-    )
-    c.commit()
+    try:
+        c.execute("DELETE FROM check_hourly")
+        c.execute(
+            "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) "
+            "SELECT domain_id, local_hour_ts(ts), COUNT(*), "
+            "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) "
+            "FROM checks GROUP BY domain_id, local_hour_ts(ts)"
+        )
+        c.execute(
+            "INSERT INTO settings (key, value) VALUES ('check_hourly_local_backfilled', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (tz_key,),
+        )
+        c.commit()
+    except Exception:
+        # 重建失败必须恢复旧桶和标记，避免后续提交留下不完整的历史汇总。
+        c.rollback()
+        raise
 
 
 def get_setting(key: str, default=None):
@@ -277,11 +291,16 @@ def update_domain(domain_id: int, reset_marker: bool = False, **kw):
 
 def delete_domain(domain_id: int):
     c = conn()
-    c.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
-    c.execute("DELETE FROM checks WHERE domain_id = ?", (domain_id,))
-    c.execute("DELETE FROM check_hourly WHERE domain_id = ?", (domain_id,))
-    c.execute("DELETE FROM changes WHERE domain_id = ?", (domain_id,))
-    c.commit()
+    try:
+        c.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
+        c.execute("DELETE FROM checks WHERE domain_id = ?", (domain_id,))
+        c.execute("DELETE FROM check_hourly WHERE domain_id = ?", (domain_id,))
+        c.execute("DELETE FROM changes WHERE domain_id = ?", (domain_id,))
+        c.commit()
+    except Exception:
+        # 域名和关联历史必须一起保留，不能由后续无关提交固化半套删除。
+        c.rollback()
+        raise
 
 
 # ---------- checks ----------
@@ -289,17 +308,22 @@ def delete_domain(domain_id: int):
 def add_check(domain_id: int, status: str, ip, rtt_ms, error=None, ts: int | None = None):
     c = conn()
     ts = int(time.time()) if ts is None else int(ts)
-    c.execute(
-        "INSERT INTO checks (domain_id, ts, status, ip, rtt_ms, error) VALUES (?, ?, ?, ?, ?, ?)",
-        (domain_id, ts, status, ip, rtt_ms, error),
-    )
-    c.execute(
-        "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) VALUES (?, ?, 1, ?) "
-        "ON CONFLICT(domain_id, hour_ts) DO UPDATE SET "
-        "total = total + 1, fail = fail + excluded.fail",
-        (domain_id, local_hour_ts(ts), int(status != "ok")),
-    )
-    c.commit()
+    try:
+        c.execute(
+            "INSERT INTO checks (domain_id, ts, status, ip, rtt_ms, error) VALUES (?, ?, ?, ?, ?, ?)",
+            (domain_id, ts, status, ip, rtt_ms, error),
+        )
+        c.execute(
+            "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) VALUES (?, ?, 1, ?) "
+            "ON CONFLICT(domain_id, hour_ts) DO UPDATE SET "
+            "total = total + 1, fail = fail + excluded.fail",
+            (domain_id, local_hour_ts(ts), int(status != "ok")),
+        )
+        c.commit()
+    except Exception:
+        # 汇总失败时不能留下明细，否则图表会永久少计这次检查。
+        c.rollback()
+        raise
 
 
 def last_check(domain_id: int):
@@ -355,24 +379,32 @@ def chart_counts(since: int, hours: int):
 
 
 def cleanup_checks(days: int):
-    c = conn()
     cutoff = int(time.time()) - days * 86400
     cutoff_hour = local_hour_ts(cutoff)
     cutoff_end = int((datetime.datetime.fromtimestamp(cutoff_hour)
                       + datetime.timedelta(hours=1)).timestamp())
-    c.execute("DELETE FROM checks WHERE ts < ?", (cutoff,))
-    c.execute("DELETE FROM check_hourly WHERE hour_ts < ?", (cutoff_hour,))
-    # 边界小时可能同时含过期与保留记录，按删除后的明细重算以保持 retention 语义。
-    c.execute("DELETE FROM check_hourly WHERE hour_ts = ?", (cutoff_hour,))
-    c.execute(
-        "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) "
-        "SELECT domain_id, local_hour_ts(ts), COUNT(*), "
-        "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) FROM checks "
-        "WHERE ts >= ? AND ts < ? AND local_hour_ts(ts) = ? "
-        "GROUP BY domain_id, local_hour_ts(ts)",
-        (cutoff, cutoff_end, cutoff_hour),
-    )
-    c.commit()
+    # 在线程内部打开并关闭独立连接，避免与事件循环的连接交叉提交/回滚。
+    c = _open_connection()
+    try:
+        c.execute("DELETE FROM checks WHERE ts < ?", (cutoff,))
+        c.execute("DELETE FROM check_hourly WHERE hour_ts < ?", (cutoff_hour,))
+        # 边界小时可能同时含过期与保留记录，按删除后的明细重算以保持 retention 语义。
+        c.execute("DELETE FROM check_hourly WHERE hour_ts = ?", (cutoff_hour,))
+        c.execute(
+            "INSERT INTO check_hourly (domain_id, hour_ts, total, fail) "
+            "SELECT domain_id, local_hour_ts(ts), COUNT(*), "
+            "SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END) FROM checks "
+            "WHERE ts >= ? AND ts < ? AND local_hour_ts(ts) = ? "
+            "GROUP BY domain_id, local_hour_ts(ts)",
+            (cutoff, cutoff_end, cutoff_hour),
+        )
+        c.commit()
+    except Exception:
+        # 删除和边界重算必须一起回滚，读取者只能看到清理前或清理后的完整状态。
+        c.rollback()
+        raise
+    finally:
+        c.close()
 
 
 # ---------- changes ----------

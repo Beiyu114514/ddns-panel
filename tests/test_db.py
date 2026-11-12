@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import sqlite3
 import stat
 import time
 import uuid
@@ -167,3 +168,109 @@ def test_global_last_bad_check_prefers_latest_failure():
     assert bad["domain_id"] == did
     assert bad["status"] == "timeout"
     assert bad["domain_name"].startswith("t-")
+
+
+def _history_snapshot(module):
+    return {
+        table: [tuple(row) for row in module.conn().execute(f"SELECT * FROM {table}")]
+        for table in ("domains", "checks", "check_hourly", "changes")
+    }
+
+
+def _seed_history(module):
+    module.init()
+    did = module.create_domain("transaction.example", "A", "1.1.1.1", 300, "test")
+    module.add_check(did, "ok", "192.0.2.1", 10, ts=2_000_000_000 - 86401)
+    module.add_check(did, "timeout", None, None, ts=2_000_000_000 - 86399)
+    module.add_change(did, "192.0.2.1", "192.0.2.2")
+    return did
+
+
+@pytest.mark.parametrize("existing_bucket", [False, True])
+def test_add_check_rolls_back_when_hourly_insert_fails(isolated_db, existing_bucket):
+    module = isolated_db
+    module.init()
+    did = module.create_domain("rollback.example", "A", "1.1.1.1", 300, "test")
+    if existing_bucket:
+        module.add_check(did, "ok", "192.0.2.1", 10, ts=2_000_000_000)
+    before = _history_snapshot(module)
+    c = module.conn()
+    c.execute("CREATE TRIGGER fail_hourly BEFORE INSERT ON check_hourly "
+              "BEGIN SELECT RAISE(ABORT, 'hourly failed'); END")
+    c.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="hourly failed"):
+        module.add_check(did, "timeout", None, None, ts=2_000_000_001)
+
+    assert not c.in_transaction
+    assert _history_snapshot(module) == before
+    # 用无关提交再次验证：失败明细不能被悄悄持久化。
+    module.set_setting("unrelated", "saved")
+    assert _history_snapshot(module) == before
+
+
+@pytest.mark.parametrize("table", ["checks", "check_hourly", "changes"])
+def test_delete_domain_rolls_back_related_history_on_failure(isolated_db, table):
+    module = isolated_db
+    did = _seed_history(module)
+    before = _history_snapshot(module)
+    c = module.conn()
+    c.execute(f"CREATE TRIGGER fail_delete BEFORE DELETE ON {table} "
+              "BEGIN SELECT RAISE(ABORT, 'delete failed'); END")
+    c.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="delete failed"):
+        module.delete_domain(did)
+
+    assert not c.in_transaction
+    assert module.get_domain(did) is not None
+    module.set_setting("unrelated", "saved")
+    assert _history_snapshot(module) == before
+    for related in ("checks", "check_hourly", "changes"):
+        assert c.execute(f"SELECT COUNT(*) FROM {related} h LEFT JOIN domains d "
+                         "ON d.id = h.domain_id WHERE d.id IS NULL").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("phase", ["delete_hourly", "rebuild_boundary"])
+def test_cleanup_rolls_back_details_and_summary_on_failure(isolated_db, monkeypatch, phase):
+    module = isolated_db
+    _seed_history(module)
+    monkeypatch.setattr(module.time, "time", lambda: 2_000_000_000)
+    before = _history_snapshot(module)
+    operation = "DELETE" if phase == "delete_hourly" else "INSERT"
+    module.conn().execute(f"CREATE TRIGGER fail_cleanup BEFORE {operation} ON check_hourly "
+                          "BEGIN SELECT RAISE(ABORT, 'cleanup failed'); END")
+    module.conn().commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="cleanup failed"):
+        module.cleanup_checks(1)
+
+    assert _history_snapshot(module) == before
+    module.set_setting("unrelated", "saved")
+    assert _history_snapshot(module) == before
+    # 独立读取连接也必须看到回滚后的完整历史。
+    with sqlite3.connect(module.DB_PATH) as observer:
+        assert observer.execute("SELECT COUNT(*) FROM checks").fetchone()[0] == 2
+
+
+def test_hourly_migration_rolls_back_buckets_and_marker(isolated_db):
+    module = isolated_db
+    _seed_history(module)
+    module.set_setting("check_hourly_local_backfilled", "old-timezone")
+    c = module.conn()
+    # 模拟旧时区桶，保证成功重算的结果不同，才能证明失败后旧桶确实被恢复。
+    c.execute("UPDATE check_hourly SET hour_ts = hour_ts + 3600")
+    c.commit()
+    before = _history_snapshot(module)
+    c.execute("CREATE TRIGGER fail_marker BEFORE INSERT ON settings "
+              "WHEN NEW.key = 'check_hourly_local_backfilled' "
+              "BEGIN SELECT RAISE(ABORT, 'marker failed'); END")
+    c.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="marker failed"):
+        module._migrate_check_hourly(c)
+
+    assert not c.in_transaction
+    module.set_setting("unrelated", "saved")
+    assert _history_snapshot(module) == before
+    assert module.get_setting("check_hourly_local_backfilled") == "old-timezone"
