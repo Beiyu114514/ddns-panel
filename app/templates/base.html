@@ -14,7 +14,7 @@
 
 {% macro navlinks(req) -%}
 <a href="/" {% if req.url.path == '/' %}aria-current="page"{% endif %}>总览</a>
-<a href="/domain/new" {% if req.url.path == '/domain/new' %}aria-current="page"{% endif %}>添加域名</a>
+<a href="/domain/new" {% if req.url.path == '/domain/new' %}aria-current="page"{% endif %}>添加监控项</a>
 <a href="/settings" {% if req.url.path == '/settings' %}aria-current="page"{% endif %}>设置</a>
 <form method="post" action="/logout" class="inline" data-pending="退出中…">
   <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">

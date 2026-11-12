@@ -19,7 +19,7 @@
   <form method="post" action="/domain/new" class="form narrow" data-pending="创建中…">
     <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
     <label for="name">域名</label>
-    <input id="name" name="name" value="{{ draft.name }}" required
+    <input id="name" name="name" value="{{ draft.name }}" required maxlength="253"
            autocomplete="off" autocorrect="off" spellcheck="false" autocapitalize="none" inputmode="url"
            placeholder="example.com"
            {% if error %}aria-invalid="true" aria-describedby="name-hint name-error"{% else %}aria-describedby="name-hint"{% endif %}
@@ -34,7 +34,8 @@
 
     <label for="resolver">DNS 服务器</label>
     <input id="resolver" name="resolver" value="{{ draft.resolver }}" required
-           list="resolver-list" inputmode="decimal" autocomplete="off" spellcheck="false">
+           list="resolver-list" inputmode="text" autocomplete="off" autocapitalize="none"
+           autocorrect="off" spellcheck="false">
     <datalist id="resolver-list">
       {% for r in resolvers %}<option value="{{ r }}"></option>{% endfor %}
     </datalist>

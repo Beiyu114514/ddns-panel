@@ -111,6 +111,23 @@ async function ensureServer() {
   return url;
 }
 
+function setDemoDomainName(name) {
+  // 仅修改脚本自己的临时库；外部服务模式不写入数据。
+  if (!dataDir) return;
+  const result = spawnSync(PY, ['-c', [
+    'import sys',
+    'from app import db',
+    'db.init()',
+    'db.conn().execute("UPDATE domains SET name = ? WHERE id = 1", (sys.argv[1],))',
+    'db.conn().commit()',
+  ].join('\n'), name], {
+    cwd: ROOT, encoding: 'utf8', env: { ...process.env, DDNS_DATA_DIR: dataDir },
+  });
+  if (result.status !== 0) {
+    throw new Error(`演示域名更新失败: ${result.stderr || result.stdout}`);
+  }
+}
+
 function readPassword() {
   if (passwordArg) return passwordArg;
   const dir = dataDir || process.env.DDNS_DATA_DIR;
@@ -384,10 +401,18 @@ async function run() {
         const page = await context.newPage();
         await login(page, base, password);
 
+        setDemoDomainName('home.demo.example');
         await page.goto(`${base}/`, { waitUntil: 'networkidle' });
         await checkOverflow(page, `${label} 首页`);
         await checkFirstScreen(page, label);
         await checkChart(page, width, theme);
+
+        if (dataDir) {
+          // 常规数据先验证首屏布局，再用超长域名验证异常列表和移动卡片断行。
+          setDemoDomainName(['a'.repeat(63), 'b'.repeat(63), 'c'.repeat(63), 'd'.repeat(61)].join('.'));
+          await page.reload({ waitUntil: 'networkidle' });
+          await checkOverflow(page, `${label} 253 字符域名首页`);
+        }
 
         await page.goto(`${base}/domain/1?days=90`, { waitUntil: 'networkidle' });
         await checkOverflow(page, `${label} 域名详情`);

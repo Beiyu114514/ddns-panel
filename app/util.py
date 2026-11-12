@@ -26,6 +26,16 @@ STATUS_LABELS = {
     "pending": "待检查",
 }
 
+INTERVAL_OPTIONS = [
+    (60, "1 分钟"), (300, "5 分钟"), (600, "10 分钟"), (1800, "30 分钟"),
+    (3600, "1 小时"), (7200, "2 小时"), (21600, "6 小时"), (86400, "24 小时"),
+]
+
+
+def interval_label(sec: int) -> str:
+    """将检查间隔转换为常用档位文案，非标准值保留秒数。"""
+    return next((label for value, label in INTERVAL_OPTIONS if value == sec), f"{sec} 秒")
+
 
 def is_cloudflare(ip: str) -> bool:
     if not ip:

@@ -11,6 +11,7 @@ import pytest
 from app import db
 from app import main as main_module
 from app.main import app, build_timeline
+from app.util import interval_label
 
 
 def _seed_domain():
@@ -205,6 +206,89 @@ def test_token_is_never_echoed_and_blank_keeps_old_value(auth_client):
     }, follow_redirects=False)
     assert resp.status_code == 303
     assert db.get_setting("tg_token") == "SECRET-TOKEN-XYZ"
+
+
+@pytest.mark.parametrize("new_token", ["", "REPLACEMENT-TOKEN"])
+def test_saved_telegram_token_can_be_cleared(auth_client, new_token):
+    db.set_setting("tg_token", "SECRET-TOKEN-XYZ")
+    html = auth_client.get("/settings").text
+    assert 'name="clear_tg_token"' in html
+    assert "清除已保存的 Token" in html
+    resp = auth_client.post("/settings/notify", data={
+        "_csrf": auth_client.cookies.get("ddns_csrf"),
+        "tg_enabled": "on", "tg_token": new_token, "clear_tg_token": "on",
+        "tg_chat": "12345", "fail_cooldown_min": "60",
+        "change_cooldown_min": "0",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+    assert db.get_setting("tg_token") == ""
+    assert 'name="clear_tg_token"' not in auth_client.get("/settings").text
+
+
+@pytest.mark.parametrize(("seconds", "label"), [
+    (300, "5 分钟"), (86400, "24 小时"), (900, "900 秒"),
+])
+def test_interval_label(seconds, label):
+    assert interval_label(seconds) == label
+
+
+def test_resolver_inputs_accept_ipv6_on_mobile(auth_client):
+    new_html = auth_client.get("/domain/new").text
+    did = _seed_domain()
+    detail_html = auth_client.get(f"/domain/{did}").text
+    for html in (new_html, detail_html):
+        resolver = re.search(r'<input[^>]*id="resolver"[^>]*>', html).group(0)
+        assert 'inputmode="text"' in resolver
+        assert 'autocapitalize="none"' in resolver
+        assert 'autocorrect="off"' in resolver
+        assert 'spellcheck="false"' in resolver
+        assert 'list="resolver-list"' in resolver
+
+
+def test_long_domain_renders_on_home_and_detail_without_baseline(auth_client):
+    name = ".".join(("a" * 63, "b" * 63, "c" * 63, "d" * 61))
+    assert len(name) == 253
+    assert main_module._valid_domain(name) == name
+    did = db.create_domain(name, "A", "1.1.1.1", 86400, "")
+    home = auth_client.get("/")
+    detail = auth_client.get(f"/domain/{did}")
+    assert home.status_code == detail.status_code == 200
+    assert name in home.text and name in detail.text
+    assert "24 小时" in home.text
+    # 320px 下的实际断行与页面宽度由 scripts/visual.mjs 的浏览器门禁覆盖。
+
+
+@pytest.mark.parametrize(("history", "expected"), [
+    ("new", "—"), ("reset", "—"), ("baseline", "2.0 小时"),
+])
+def test_stable_duration_requires_current_baseline(auth_client, monkeypatch, history, expected):
+    now = int(time.time())
+    monkeypatch.setattr(main_module.time, "time", lambda: now)
+    did = db.create_domain(f"stable-{uuid.uuid4().hex}.example", "A", "1.1.1.1", 300, "")
+    c = db.conn()
+    c.execute("UPDATE domains SET created_at = ? WHERE id = ?", (now - 5 * 86400, did))
+    if history != "new":
+        c.execute("INSERT INTO changes (domain_id, ts, old_ip, new_ip) VALUES (?, ?, NULL, ?)",
+                  (did, now - 7200, "203.0.113.1"))
+    if history == "reset":
+        c.execute("INSERT INTO changes (domain_id, ts, old_ip, new_ip) VALUES (?, ?, NULL, NULL)",
+                  (did, now - 3600))
+    c.commit()
+    home = auth_client.get("/")
+    detail = auth_client.get(f"/domain/{did}")
+    assert home.status_code == detail.status_code == 200
+    # 只检查目标行的稳定时长，避免被页面其他时长或空值误导。
+    row = next(row for row in re.findall(r"<tr\b[^>]*>(.*?)</tr>", home.text, re.S)
+               if f'href="/domain/{did}"' in row)
+    cells = re.findall(r"<td\b[^>]*>(.*?)</td>", row, re.S)
+    assert cells[3].strip() == expected
+    stable = re.search(r"<dt>当前 IP 稳定时长</dt>\s*<dd>(.*?)</dd>", detail.text).group(1)
+    assert stable == expected
+
+
+def test_new_domain_name_input_has_dns_length_limit(auth_client):
+    html = auth_client.get("/domain/new").text
+    assert re.search(r'<input[^>]*id="name"[^>]*maxlength="253"', html)
 
 
 def test_flash_cookie_is_ascii_and_consumed_once(auth_client):

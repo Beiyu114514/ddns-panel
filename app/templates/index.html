@@ -20,7 +20,7 @@
     <p class="muted">共 {{ overview.total }} 个监控项，{{ overview.enabled }} 个启用中。
       {% if today.total %}今日已检查 {{ today.total }} 次。{% endif %}</p>
   </div>
-  <a class="btn primary" href="/domain/new">添加域名</a>
+  <a class="btn primary" href="/domain/new">添加监控项</a>
 </div>
 
 {% if not overview.total %}
@@ -105,7 +105,7 @@
           <td>
             <a class="domain-link" href="/domain/{{ r.d.id }}">{{ r.d.name }}</a>
             <div class="sub"><span class="badge type">{{ r.d.rrtype }}</span>
-              <span class="muted">{{ r.d.interval_sec // 60 }} 分钟</span></div>
+              <span class="muted">{{ r.d.interval_sec|interval_label }}</span></div>
           </td>
           <td class="mono">{{ r.cur|fmt_empty }}</td>
           <td>{{ state_badge(r.state, r.last) }}

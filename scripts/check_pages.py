@@ -134,6 +134,12 @@ def main() -> int:
     for attr in ('autocorrect="off"', 'spellcheck="false"', 'inputmode="url"'):
         if attr not in new:
             failures.append(f"域名输入缺少 {attr}")
+    for label, html in (("添加监控项", new), ("域名详情", detail)):
+        resolver = re.search(r'<input[^>]*id="resolver"[^>]*>', html)
+        for attr in ('inputmode="text"', 'autocapitalize="none"', 'autocorrect="off"',
+                     'spellcheck="false"', 'list="resolver-list"'):
+            if not resolver or attr not in resolver.group(0):
+                failures.append(f"{label} DNS 服务器输入缺少 {attr}")
     ids = re.findall(r'<input[^>]*\bid="([^"]+)"', new)
     for input_id in ids:
         if f'for="{input_id}"' not in new:

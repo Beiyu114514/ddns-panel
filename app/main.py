@@ -23,8 +23,9 @@ from . import db
 from .middleware import CSRF_COOKIE, SecurityMiddleware
 from .monitor import Monitor, RESOLVERS, resolve_once
 from .notify import send_tg
-from .util import (IP_PALETTE_SIZE, fmt_ago, fmt_dur, fmt_empty, fmt_rtt,
-                   fmt_short, fmt_ts, is_cloudflare, status_label, to_int)
+from .util import (INTERVAL_OPTIONS, IP_PALETTE_SIZE, fmt_ago, fmt_dur, fmt_empty,
+                   fmt_rtt, fmt_short, fmt_ts, interval_label, is_cloudflare,
+                   status_label, to_int)
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 COOKIE = "ddns_session"
@@ -72,11 +73,6 @@ TIMELINE_LEGEND_MAX = 8
 TIMELINE_TICKS = 5
 # Python 整数可无限增长，但 SQLite 绑定只接受有符号 64 位整数。
 SQLITE_MAX_INTEGER = 2**63 - 1
-INTERVAL_OPTIONS = [
-    (60, "1 分钟"), (300, "5 分钟"), (600, "10 分钟"), (1800, "30 分钟"),
-    (3600, "1 小时"), (7200, "2 小时"), (21600, "6 小时"), (86400, "24 小时"),
-]
-
 monitor = Monitor()
 
 
@@ -121,6 +117,7 @@ templates.env.filters["fmt_dur"] = fmt_dur
 templates.env.filters["fmt_rtt"] = fmt_rtt
 templates.env.filters["fmt_empty"] = fmt_empty
 templates.env.filters["status_label"] = status_label
+templates.env.filters["interval_label"] = interval_label
 templates.env.globals["INTERVAL_OPTIONS"] = INTERVAL_OPTIONS
 
 
@@ -590,7 +587,7 @@ async def index(request: Request):
             "last": last,
             "state": state,
             "cur": d["cur"],
-            "stable": fmt_dur(now - (d["activity"] or d["created_at"])),
+            "stable": fmt_dur(now - (d["activity"] or d["created_at"])) if d["cur"] else "—",
             "c7": d["c7"],
             "c30": d["c30"],
         }
@@ -902,7 +899,8 @@ async def domain_detail(request: Request, domain_id: str, days: int = 30, page: 
         "cur": cur,
         "cf_warn": is_cloudflare(cur),
         "last": db.last_check(domain_id),
-        "stable": fmt_dur(now - (db.last_activity_ts(domain_id) or d["created_at"])),
+        "stable": (fmt_dur(now - (db.last_activity_ts(domain_id) or d["created_at"]))
+                   if cur else "—"),
         "total_changes": stats["changes"],
         "days": days,
         "tl": timeline,
@@ -1088,7 +1086,8 @@ def _save_notify(form):
     if errors:
         return errors, None
     raw_token = str(form.get("tg_token", "")).strip()
-    token = raw_token or db.get_setting("tg_token", "")
+    token = "" if form.get("clear_tg_token") else (
+        raw_token or db.get_setting("tg_token", ""))
     vals = {
         "tg_enabled": "1" if form.get("tg_enabled") else "0",
         "notify_on_change": "1" if form.get("notify_on_change") else "0",
@@ -1111,6 +1110,7 @@ def _notify_echo(form) -> dict:
         "fail_cooldown_min": str(form.get("fail_cooldown_min", "")),
         "change_cooldown_min": str(form.get("change_cooldown_min", "")),
         "tg_token_pending": bool(str(form.get("tg_token", "")).strip()),
+        "clear_tg_token": bool(form.get("clear_tg_token")),
     }
 
 

@@ -211,7 +211,8 @@
 
     <label for="resolver">DNS 服务器</label>
     <input id="resolver" name="resolver" value="{{ d.resolver }}" list="resolver-list"
-           required inputmode="decimal" autocomplete="off" spellcheck="false">
+           required inputmode="text" autocomplete="off" autocapitalize="none"
+           autocorrect="off" spellcheck="false">
     <datalist id="resolver-list">
       {% for r in resolvers %}<option value="{{ r }}"></option>{% endfor %}
     </datalist>
@@ -222,7 +223,7 @@
       <option value="{{ sec }}" {% if d.interval_sec == sec %}selected{% endif %}>{{ label }}</option>
       {% endfor %}
       {% if interval_custom %}
-      <option value="{{ interval_custom }}" selected>{{ interval_custom }} 秒（当前）</option>
+      <option value="{{ interval_custom }}" selected>{{ interval_custom|interval_label }}（当前）</option>
       {% endif %}
     </select>
 

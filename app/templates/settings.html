@@ -27,11 +27,17 @@
     <label for="tg_token">Bot Token</label>
     <input id="tg_token" name="tg_token" type="password" value=""
            autocomplete="off" spellcheck="false"
-           placeholder="{{ '已配置，留空保持不变' if s.tg_token_set else '123456789:AA...' }}"
+           placeholder="{{ '已配置，填写可更换' if s.tg_token_set else '123456789:AA...' }}"
            aria-describedby="tg-token-hint">
     <p id="tg-token-hint" class="hint">
-      {% if s.tg_token_set %}已保存 Token（出于安全考虑不回显）。只在需要更换时填写。{% else %}在 @BotFather 创建机器人后获得。{% endif %}
+      {% if s.tg_token_set %}已保存 Token（出于安全考虑不回显）。留空保持不变；勾选下方选项后将清除 Token，即使同时填写了新值。{% else %}在 @BotFather 创建机器人后获得。{% endif %}
     </p>
+    {% if s.tg_token_set %}
+    <label class="check-row" for="clear_tg_token">
+      <input type="checkbox" id="clear_tg_token" name="clear_tg_token" {% if s.clear_tg_token %}checked{% endif %}>
+      <span>清除已保存的 Token</span>
+    </label>
+    {% endif %}
 
     <label for="tg_chat">Chat ID</label>
     <input id="tg_chat" name="tg_chat" value="{{ s.tg_chat }}" inputmode="numeric"
