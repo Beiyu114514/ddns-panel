@@ -1,60 +1,94 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
+{% import "_forms.html" as forms %}
 {% block title %}添加监控项 · DDNS 监控{% endblock %}
 
 {% block content %}
 <nav class="breadcrumb" aria-label="面包屑">
-  <a href="/">总览</a><span aria-hidden="true">/</span><span>添加监控项</span>
+  <a href="/">总览</a>
+  <span class="breadcrumb-sep" aria-hidden="true">{{ icons.icon('chevron-right', 13) }}</span>
+  <span>添加监控项</span>
 </nav>
 
 <div class="page-head">
-  <div>
+  <div class="page-heading">
     <h1>添加监控项</h1>
     <p class="muted">添加后会立即解析一次作为基线，之后按间隔自动检查。</p>
   </div>
 </div>
 
-{% if error %}<div class="alert error" id="name-error" role="alert">{{ error }}</div>{% endif %}
+{{ forms.error_summary('new-errors', '监控项未添加：', errors) }}
 
-<section class="card">
-  <form method="post" action="/domain/new" class="form narrow" data-pending="创建中…">
-    <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
-    <label for="name">域名</label>
-    <input id="name" name="name" value="{{ draft.name }}" required maxlength="253"
-           autocomplete="off" autocorrect="off" spellcheck="false" autocapitalize="none" inputmode="url"
-           placeholder="example.com"
-           {% if error %}aria-invalid="true" aria-describedby="name-hint name-error"{% else %}aria-describedby="name-hint"{% endif %}
-           {% if not draft.name %}autofocus{% endif %}>
-    <p id="name-hint" class="hint">只填主机名（如 example.com、home.example.com），不要包含协议或路径。</p>
-
-    <label for="rrtype">记录类型</label>
-    <select id="rrtype" name="rrtype">
-      <option value="A" {% if draft.rrtype == 'A' %}selected{% endif %}>A（IPv4）</option>
-      <option value="AAAA" {% if draft.rrtype == 'AAAA' %}selected{% endif %}>AAAA（IPv6）</option>
-    </select>
-
-    <label for="resolver">DNS 服务器</label>
-    <input id="resolver" name="resolver" value="{{ draft.resolver }}" required
-           list="resolver-list" inputmode="text" autocomplete="off" autocapitalize="none"
-           autocorrect="off" spellcheck="false">
-    <datalist id="resolver-list">
-      {% for r in resolvers %}<option value="{{ r }}"></option>{% endfor %}
-    </datalist>
-    <p class="hint">建议使用公共 DNS（如 1.1.1.1），避免运营商 DNS 缓存影响判断。</p>
-
-    <label for="interval_sec">检查间隔</label>
-    <select id="interval_sec" name="interval_sec">
-      {% for sec, label in INTERVAL_OPTIONS %}
-      <option value="{{ sec }}" {% if draft.interval_sec == sec %}selected{% endif %}>{{ label }}</option>
-      {% endfor %}
-    </select>
-
-    <label for="note">备注（可选）</label>
-    <input id="note" name="note" value="{{ draft.note }}" maxlength="200" placeholder="如：家里宽带 IPv4">
-
-    <div class="form-actions">
-      <button class="btn primary" type="submit">添加并检查</button>
-      <a class="btn" href="/">取消</a>
+<div class="split-layout">
+  <section class="card" aria-labelledby="new-h">
+    <div class="card-head">
+      <div>
+        <h2 id="new-h" class="card-title"><span class="card-icon">{{ icons.icon('globe', 15) }}</span>监控项信息</h2>
+        <p class="muted">只需要域名与解析器，其余保持默认即可。</p>
+      </div>
     </div>
-  </form>
-</section>
+    <form method="post" action="/domain/new" class="form" data-pending="创建中…">
+      <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
+      <label for="name">域名</label>
+      <input id="name" name="name" value="{{ draft.name }}" required maxlength="253"
+             autocomplete="off" autocorrect="off" spellcheck="false" autocapitalize="none" inputmode="url"
+             placeholder="example.com"
+             {% if errors.get('name') %}aria-invalid="true" aria-describedby="name-hint name-error"{% else %}aria-describedby="name-hint"{% endif %}
+             {% if not draft.name and not errors %}autofocus{% endif %}>
+      {% if errors.get('name') %}<p class="field-error" id="name-error">{{ errors.name }}</p>{% endif %}
+      <p id="name-hint" class="hint">只填主机名（如 example.com、home.example.com），不要包含协议或路径。</p>
+
+      <div class="field-grid">
+        <div>
+          <label for="rrtype">记录类型</label>
+          <select id="rrtype" name="rrtype">
+            <option value="A" {% if draft.rrtype == 'A' %}selected{% endif %}>A（IPv4）</option>
+            <option value="AAAA" {% if draft.rrtype == 'AAAA' %}selected{% endif %}>AAAA（IPv6）</option>
+          </select>
+        </div>
+        <div>
+          <label for="interval_sec">检查间隔</label>
+          <select id="interval_sec" name="interval_sec">
+            {% for sec, label in INTERVAL_OPTIONS %}
+            <option value="{{ sec }}" {% if draft.interval_sec == sec %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <label for="resolver">DNS 服务器</label>
+      <input id="resolver" name="resolver" value="{{ draft.resolver }}" required
+             list="resolver-list" inputmode="text" autocomplete="off" autocapitalize="none"
+             autocorrect="off" spellcheck="false"
+             {% if errors.get('resolver') %}aria-invalid="true" aria-describedby="resolver-error"{% endif %}>
+      {% if errors.get('resolver') %}<p class="field-error" id="resolver-error">{{ errors.resolver }}</p>{% endif %}
+      <datalist id="resolver-list">
+        {% for r in resolvers %}<option value="{{ r }}"></option>{% endfor %}
+      </datalist>
+      <p class="hint">建议使用公共 DNS（如 1.1.1.1），避免运营商 DNS 缓存影响判断。</p>
+
+      <label for="note">备注（可选）</label>
+      <input id="note" name="note" value="{{ draft.note }}" maxlength="200" placeholder="如：家里宽带 IPv4">
+
+      <div class="form-actions">
+        <button class="btn primary" type="submit">{{ icons.icon('plus', 15) }}<span>添加并检查</span></button>
+        <a class="btn ghost" href="/">取消</a>
+      </div>
+    </form>
+  </section>
+
+  <aside class="card info-card" aria-labelledby="info-h">
+    <div class="card-head">
+      <div>
+        <h2 id="info-h" class="card-title"><span class="card-icon">{{ icons.icon('info', 15) }}</span>添加后会发生什么</h2>
+      </div>
+    </div>
+    <ol class="info-steps">
+      <li><span class="step-index">1</span><div><strong>立即解析一次</strong><p>作为当前 IP 的基线，并记录首次结果。</p></div></li>
+      <li><span class="step-index">2</span><div><strong>按间隔自动检查</strong><p>后续解析结果写入时间线与检查记录。</p></div></li>
+      <li><span class="step-index">3</span><div><strong>IP 变动时通知</strong><p>在设置中启用 Telegram 后，变动与持续失败会推送提醒。</p></div></li>
+    </ol>
+    <p class="info-note">{{ icons.icon('shield-check', 15) }}<span>本面板只观察 DNS 解析结果，不会向 DNS 服务商更新记录。</span></p>
+  </aside>
+</div>
 {% endblock %}

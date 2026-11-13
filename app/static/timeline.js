@@ -12,6 +12,15 @@
     tip.textContent = segments[idx].getAttribute('data-label');
   }
   track.addEventListener('focus', function () { show(idx); });
+  function selectPointer(event) {
+    // marker 和空白区域不代表 IP 段，不改变当前选择。
+    var segment = event.target.closest('.tl-seg');
+    var index = segments.indexOf(segment);
+    if (index !== -1) show(index);
+  }
+  track.addEventListener('pointerover', selectPointer);
+  track.addEventListener('pointerdown', selectPointer);
+  track.addEventListener('click', selectPointer);
   track.addEventListener('keydown', function (e) {
     var next = null;
     if (e.key === 'ArrowLeft') next = idx - 1;

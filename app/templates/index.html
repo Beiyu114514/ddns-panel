@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}总览 · DDNS 监控{% endblock %}
 
 {% macro state_badge(state, last) -%}
@@ -15,40 +16,55 @@
 
 {% block content %}
 <div class="page-head">
-  <div>
+  <div class="page-heading">
     <h1>总览</h1>
     <p class="muted">共 {{ overview.total }} 个监控项，{{ overview.enabled }} 个启用中。
       {% if today.total %}今日已检查 {{ today.total }} 次。{% endif %}</p>
   </div>
-  <a class="btn primary" href="/domain/new">添加监控项</a>
+  <div class="page-actions">
+    <a class="btn primary" href="/domain/new">{{ icons.icon('plus', 16) }}<span>添加监控项</span></a>
+  </div>
 </div>
 
 {% if not overview.total %}
 <div class="card empty-state">
+  <span class="empty-icon">{{ icons.icon('radio', 24) }}</span>
   <h2>还没有监控项</h2>
   <p>添加第一个域名后，这里会显示解析状态、IP 时间线与变动记录。</p>
-  <a class="btn primary" href="/domain/new">添加第一个域名</a>
+  <a class="btn primary" href="/domain/new">{{ icons.icon('plus', 16) }}<span>添加第一个域名</span></a>
 </div>
 {% else %}
 
 <section class="stats" aria-label="关键指标">
   <div class="stat">
-    <span class="stat-label">监控项</span>
+    <div class="stat-top">
+      <span class="stat-label">监控项</span>
+      <span class="stat-icon">{{ icons.icon('globe', 16) }}</span>
+    </div>
     <strong class="stat-value">{{ overview.total }}</strong>
     <span class="stat-sub">启用 {{ overview.enabled }} · 停用 {{ overview.disabled }}</span>
   </div>
   <div class="stat">
-    <span class="stat-label">今日成功率</span>
+    <div class="stat-top">
+      <span class="stat-label">今日成功率</span>
+      <span class="stat-icon">{{ icons.icon('circle-check', 16) }}</span>
+    </div>
     <strong class="stat-value">{{ today.rate }}<span class="unit">%</span></strong>
     <span class="stat-sub">检查 {{ today.total }} 次 · 失败 {{ today.fail }} 次</span>
   </div>
   <div class="stat">
-    <span class="stat-label">今日 IP 变动</span>
+    <div class="stat-top">
+      <span class="stat-label">今日 IP 变动</span>
+      <span class="stat-icon">{{ icons.icon('refresh-cw', 16) }}</span>
+    </div>
     <strong class="stat-value">{{ today.changes }}</strong>
     <span class="stat-sub">7 天 {{ overview.c7 }} · 30 天 {{ overview.c30 }}</span>
   </div>
   <div class="stat{% if abnormal_count %} stat-alert{% endif %}">
-    <span class="stat-label">异常监控项</span>
+    <div class="stat-top">
+      <span class="stat-label">异常监控项</span>
+      <span class="stat-icon">{{ icons.icon('triangle-alert', 16) }}</span>
+    </div>
     <strong class="stat-value">{{ abnormal_count }}</strong>
     <span class="stat-sub">{% if abnormal_count %}需要处理，见下方列表{% else %}全部正常{% endif %}</span>
   </div>
@@ -56,22 +72,30 @@
 
 {% if abnormal_count %}
 <section class="alert-panel" aria-labelledby="abnormal-h">
-  <h2 id="abnormal-h">需要处理（{{ abnormal_count }}）</h2>
+  <div class="alert-panel-head">
+    <span class="alert-panel-icon">{{ icons.icon('triangle-alert', 18) }}</span>
+    <div>
+      <h2 id="abnormal-h">需要处理</h2>
+      <p>有 {{ abnormal_count }} 个监控项解析异常，建议先手动检查一次。</p>
+    </div>
+  </div>
   <ul class="abnormal-list">
     {% for r in abnormal_rows %}
     <li>
-      <a href="/domain/{{ r.d.id }}">{{ r.d.name }}</a>
-      {{ state_badge(r.state, r.last) }}
-      <span class="muted">{{ r.last.ts|fmt_ago }}{% if r.last.error %} · {{ r.last.error }}{% endif %}</span>
+      <div class="abnormal-main">
+        <a href="/domain/{{ r.d.id }}">{{ r.d.name }}</a>
+        {{ state_badge(r.state, r.last) }}
+        <span class="muted">{{ r.last.ts|fmt_ago }}{% if r.last.error %} · {{ r.last.error }}{% endif %}</span>
+      </div>
       <form method="post" action="/domain/{{ r.d.id }}/check" class="inline" data-pending="检查中…">
         <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
-        <button class="btn sm" type="submit">立即检查</button>
+        <button class="btn sm" type="submit">{{ icons.icon('refresh-cw', 14) }}<span>立即检查</span></button>
       </form>
     </li>
     {% endfor %}
   </ul>
   {% if abnormal_count > abnormal_rows|length %}
-  <p class="muted">另有 {{ abnormal_count - abnormal_rows|length }} 个异常项，见下方监控列表。</p>
+  <p class="alert-panel-foot">另有 {{ abnormal_count - abnormal_rows|length }} 个异常项，见下方监控列表。</p>
   {% endif %}
 </section>
 {% elif recent_bad %}
@@ -81,8 +105,11 @@
 
 <section class="card" id="domains" aria-labelledby="domains-h">
   <div class="card-head">
-    <h2 id="domains-h">监控项</h2>
-    <span class="muted">异常与待检查排在最前</span>
+    <div>
+      <h2 id="domains-h">监控项</h2>
+      <p class="muted">异常与待检查排在最前。</p>
+    </div>
+    <span class="badge muted">{{ rows|length }} 项</span>
   </div>
 
   {% if rows %}
@@ -116,9 +143,9 @@
             <div class="row-actions">
               <form method="post" action="/domain/{{ r.d.id }}/check" class="inline" data-pending="检查中…">
                 <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
-                <button class="btn sm" type="submit" {% if not r.d.enabled %}disabled title="监控项已停用"{% endif %}>立即检查</button>
+                <button class="btn sm" type="submit" {% if not r.d.enabled %}disabled title="监控项已停用"{% endif %}>{{ icons.icon('refresh-cw', 13) }}<span>立即检查</span></button>
               </form>
-              <a class="btn sm" href="/domain/{{ r.d.id }}#settings">设置</a>
+              <a class="btn sm ghost" href="/domain/{{ r.d.id }}#settings">{{ icons.icon('settings', 13) }}<span>设置</span></a>
             </div>
           </td>
         </tr>
@@ -143,15 +170,16 @@
       <div class="row-actions">
         <form method="post" action="/domain/{{ r.d.id }}/check" class="inline" data-pending="检查中…">
           <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
-          <button class="btn sm" type="submit" {% if not r.d.enabled %}disabled{% endif %}>立即检查</button>
+          <button class="btn sm" type="submit" {% if not r.d.enabled %}disabled{% endif %}>{{ icons.icon('refresh-cw', 13) }}<span>立即检查</span></button>
         </form>
-        <a class="btn sm" href="/domain/{{ r.d.id }}#settings">设置</a>
+        <a class="btn sm ghost" href="/domain/{{ r.d.id }}#settings">{{ icons.icon('settings', 13) }}<span>设置</span></a>
       </div>
     </li>
     {% endfor %}
   </ul>
   {% endif %}
 </section>
+
 <section class="card chart-card" aria-labelledby="chart-h">
   <div class="card-head">
     <div>

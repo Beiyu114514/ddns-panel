@@ -1,20 +1,54 @@
 (function () {
-  // 提交后禁用按钮，避免重复提交（无 JS 时表单仍可正常提交）
+  // 原生提交保留 submitter 的 formaction；以整个表单为单位防止重复提交。
+  var restorePending = [];
   document.querySelectorAll('form[data-pending]').forEach(function (form) {
+    var pending = false;
+    var controls = [];
+    var submitter = null;
+    var originalLabel = '';
+    function restore() {
+      if (!pending) return;
+      controls.forEach(function (control) { control.element.disabled = control.disabled; });
+      if (submitter) {
+        if (submitter.tagName === 'BUTTON') submitter.innerHTML = originalLabel;
+        else submitter.value = originalLabel;
+      }
+      form.removeAttribute('aria-busy');
+      pending = false;
+    }
+    restorePending.push(restore);
     form.addEventListener('submit', function (event) {
-      var button = event.submitter || form.querySelector('button[type="submit"]');
-      if (!button || button.disabled) return;
+      if (pending) { event.preventDefault(); return; }
+      if (event.defaultPrevented) return;
+      submitter = event.submitter || form.querySelector('button[type="submit"]');
+      if (submitter && submitter.disabled) { event.preventDefault(); return; }
+      pending = true;
       form.setAttribute('aria-busy', 'true');
-      button.dataset.label = button.textContent;
-      button.textContent = button.getAttribute('data-pending') || form.getAttribute('data-pending') || '处理中…';
-      button.disabled = true;
-      // DNS 查询最长约 10 秒；留足余量，避免慢请求期间被重复提交
-      window.setTimeout(function () {
-        button.disabled = false;
-        if (button.dataset.label) button.textContent = button.dataset.label;
-      }, 30000);
+      controls = Array.prototype.filter.call(form.elements, function (element) {
+        return element.type === 'submit' || element.type === 'image';
+      }).map(function (element) {
+        return { element: element, disabled: element.disabled };
+      });
+      if (submitter) {
+        originalLabel = submitter.tagName === 'BUTTON' ? submitter.innerHTML : submitter.value;
+        var label = submitter.getAttribute('data-pending') || form.getAttribute('data-pending') || '处理中…';
+        if (submitter.tagName === 'BUTTON') submitter.textContent = label;
+        else submitter.value = label;
+      }
+      controls.forEach(function (control) { control.element.disabled = true; });
+      // 后续监听器取消提交时立即恢复，慢请求期间不按定时器解除锁定。
+      Promise.resolve().then(function () { if (event.defaultPrevented) restore(); });
     });
   });
+  function restoreForms() { restorePending.forEach(function (restore) { restore(); }); }
+  window.addEventListener('pageshow', restoreForms);
+  if (window.navigation) window.navigation.addEventListener('navigateerror', restoreForms);
+
+  var errorSummary = document.querySelector('[data-error-summary]');
+  if (errorSummary) {
+    errorSummary.focus({ preventScroll: true });
+    errorSummary.scrollIntoView({ block: 'center' });
+  }
 
   // 移动端菜单：Esc 关闭、点击外部关闭
   var nav = document.querySelector('.nav-mobile');

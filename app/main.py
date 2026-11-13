@@ -636,14 +636,13 @@ def _valid_domain(name: str):
     return name
 
 
-def _clean_resolver(value: str, fallback: str) -> str:
-    import ipaddress
+def _valid_resolver(value: str) -> str | None:
     value = value.strip()
     try:
         ipaddress.ip_address(value)
         return value
     except ValueError:
-        return fallback
+        return None
 
 
 def _parse_cursor(raw) -> tuple:
@@ -805,7 +804,7 @@ def build_timeline(domain_id: int, days: int, now: int) -> dict:
 @app.get("/domain/new")
 async def domain_new(request: Request):
     return templates.TemplateResponse(request, "new.html", {
-        "resolvers": RESOLVERS, "error": None,
+        "resolvers": RESOLVERS, "errors": {},
         "draft": {"rrtype": "A", "resolver": RESOLVERS[0],
                   "interval_sec": 300, "note": "", "name": ""},
     })
@@ -820,27 +819,29 @@ async def domain_create(request: Request):
     rrtype = str(form.get("rrtype", "A"))
     if rrtype not in ("A", "AAAA"):
         rrtype = "A"
-    resolver = _clean_resolver(str(form.get("resolver", "")), RESOLVERS[0])
+    raw_resolver = str(form.get("resolver", "")).strip()
+    resolver = _valid_resolver(raw_resolver)
     interval = max(60, min(86400, to_int(form.get("interval_sec"), 300)))
     note = str(form.get("note", "")).strip()[:200]
     draft = {"name": str(form.get("name", "")).strip(), "rrtype": rrtype,
-             "resolver": resolver, "interval_sec": interval, "note": note}
+             "resolver": raw_resolver, "interval_sec": interval, "note": note}
+    errors = {}
     if not name:
+        errors["name"] = "域名格式不正确，例如 example.com"
+    elif db.get_domain_by_name(name, rrtype):
+        errors["name"] = f"{name} ({rrtype}) 已存在"
+    if resolver is None:
+        errors["resolver"] = "请输入有效的 DNS 服务器 IPv4 或 IPv6 地址"
+    if errors:
         return templates.TemplateResponse(request, "new.html", {
-            "resolvers": RESOLVERS, "draft": draft,
-            "error": "域名格式不正确，例如 example.com",
-        }, status_code=400)
-    if db.get_domain_by_name(name, rrtype):
-        return templates.TemplateResponse(request, "new.html", {
-            "resolvers": RESOLVERS, "draft": draft,
-            "error": f"{name} ({rrtype}) 已存在",
+            "resolvers": RESOLVERS, "draft": draft, "errors": errors,
         }, status_code=400)
     try:
         did = db.create_domain(name, rrtype, resolver, interval, note)
     except sqlite3.IntegrityError:
         return templates.TemplateResponse(request, "new.html", {
             "resolvers": RESOLVERS, "draft": draft,
-            "error": f"{name} ({rrtype}) 已存在",
+            "errors": {"name": f"{name} ({rrtype}) 已存在"},
         }, status_code=400)
     # 先同步检查落基线，再唤醒调度器；worker 会跳过刚完成的检查，
     # 避免同一域名连续解析两次、多 IP 记录被记成假变动
@@ -871,6 +872,13 @@ async def domain_detail(request: Request, domain_id: str, days: int = 30, page: 
     if page and page > 1:
         # 旧 OFFSET 链接没有游标可用，退回第一页而不是猜位置
         return RedirectResponse(f"/domain/{domain_id}?days={days}", 303)
+    return _domain_render(request, d, days=days)
+
+
+def _domain_render(request: Request, d, *, days=30, errors=None, draft=None,
+                   status_code=200):
+    domain_id = d["id"]
+    draft = dict(d) if draft is None else draft
     now = int(time.time())
 
     timeline = _build_timeline(domain_id, days, now)
@@ -894,10 +902,12 @@ async def domain_detail(request: Request, domain_id: str, days: int = 30, page: 
     cur = db.current_ip(domain_id)
     # 历史数据/脚本可能写入不在下拉档位里的间隔；补一个当前值选项，
     # 否则浏览器会回落到第一个选项，保存时静默改掉检查间隔
-    interval_custom = d["interval_sec"] if all(
-        d["interval_sec"] != sec for sec, _ in INTERVAL_OPTIONS) else None
+    interval_custom = draft["interval_sec"] if all(
+        draft["interval_sec"] != sec for sec, _ in INTERVAL_OPTIONS) else None
     return templates.TemplateResponse(request, "domain.html", {
         "d": d,
+        "draft": draft,
+        "errors": errors or {},
         "interval_custom": interval_custom,
         "resolvers": RESOLVERS,
         "cur": cur,
@@ -915,7 +925,7 @@ async def domain_detail(request: Request, domain_id: str, days: int = 30, page: 
         "next_before": next_before,
         "prev_after": prev_after,
         "checks": db.recent_checks(domain_id, 20),
-    })
+    }, status_code=status_code)
 
 
 @app.post("/domain/{domain_id}/update")
@@ -930,26 +940,38 @@ async def domain_update(request: Request, domain_id: str):
     # 用旧值决定是否重置基线会把新类型的基线写坏
     d = db.get_domain(domain_id)
     if not d:
-        return RedirectResponse("/", 303)
+        return _flash_redirect("/", err="监控项不存在")
     rrtype = str(form.get("rrtype", d["rrtype"]))
     if rrtype not in ("A", "AAAA"):
         rrtype = d["rrtype"]
-    resolver = _clean_resolver(str(form.get("resolver", "")), d["resolver"])
+    raw_resolver = str(form.get("resolver", "")).strip()
+    resolver = _valid_resolver(raw_resolver)
     interval = max(60, min(86400, to_int(form.get("interval_sec"), d["interval_sec"])))
     note = str(form.get("note", "")).strip()[:200]
     enabled = 1 if form.get("enabled") else 0
+    days = to_int(form.get("days"), 30)
+    if days not in (7, 30, 90):
+        days = 30
+    draft = {"rrtype": rrtype, "resolver": raw_resolver, "interval_sec": interval,
+             "note": note, "enabled": enabled}
+    errors = {}
+    if resolver is None:
+        errors["resolver"] = "请输入有效的 DNS 服务器 IPv4 或 IPv6 地址"
     if rrtype != d["rrtype"] and db.get_domain_by_name(d["name"], rrtype):
-        return _flash_redirect(f"/domain/{domain_id}",
-                               err=f"{d['name']} ({rrtype}) 已存在，无法切换")
+        errors["rrtype"] = f"{d['name']} ({rrtype}) 已存在，无法切换"
+    if errors:
+        return _domain_render(request, d, days=days, draft=draft,
+                              errors=errors, status_code=400)
     try:
         db.update_domain(domain_id, reset_marker=(rrtype != d["rrtype"]),
                          rrtype=rrtype, resolver=resolver,
                          interval_sec=interval, note=note, enabled=enabled)
     except sqlite3.IntegrityError:
-        return _flash_redirect(f"/domain/{domain_id}",
-                               err=f"{d['name']} ({rrtype}) 已存在，无法切换")
+        return _domain_render(request, d, days=days, draft=draft,
+                              errors={"rrtype": f"{d['name']} ({rrtype}) 已存在，无法切换"},
+                              status_code=400)
     monitor.poke()
-    return _flash_redirect(f"/domain/{domain_id}", msg="设置已保存")
+    return _flash_redirect(f"/domain/{domain_id}?days={days}", msg="设置已保存")
 
 
 @app.post("/domain/{domain_id}/delete")
@@ -990,10 +1012,14 @@ async def domain_check(request: Request, domain_id: str):
 
 def _settings_ctx() -> dict:
     # 只给“是否已配置”，绝不把 Bot Token 回显到 HTML（A12）
+    enabled = db.get_setting("tg_enabled") == "1"
+    token_set = bool(db.get_setting("tg_token", ""))
+    chat = db.get_setting("tg_chat", "")
     return {
-        "tg_enabled": db.get_setting("tg_enabled") == "1",
-        "tg_token_set": bool(db.get_setting("tg_token", "")),
-        "tg_chat": db.get_setting("tg_chat", ""),
+        "tg_enabled": enabled,
+        "tg_status": ("enabled" if token_set and chat else "incomplete") if enabled else "disabled",
+        "tg_token_set": token_set,
+        "tg_chat": chat,
         "notify_on_change": db.get_setting("notify_on_change", "1") == "1",
         "notify_on_fail": db.get_setting("notify_on_fail", "1") == "1",
         "fail_cooldown_min": to_int(db.get_setting("fail_cooldown_min", "60"), 60),
@@ -1078,7 +1104,7 @@ def _int_in(raw, lo: int, hi: int):
     return n if lo <= n <= hi else None
 
 
-def _save_notify(form):
+def _save_notify(form, *, require_credentials=False):
     """保存通知设置；错误只返回字段级消息，不写入半套配置。"""
     errors = {}
     cd = _int_in(form.get("fail_cooldown_min"), 5, 10080)
@@ -1087,17 +1113,23 @@ def _save_notify(form):
         errors["fail_cooldown_min"] = "失败提醒冷却需为 5–10080 分钟"
     if ccd is None:
         errors["change_cooldown_min"] = "变动提醒冷却需为 0–1440 分钟"
-    if errors:
-        return errors, None
     raw_token = str(form.get("tg_token", "")).strip()
     token = "" if form.get("clear_tg_token") else (
         raw_token or db.get_setting("tg_token", ""))
+    chat = str(form.get("tg_chat", "")).strip()
+    if form.get("tg_enabled") or require_credentials:
+        if not token:
+            errors["tg_token"] = "启用通知或发送测试消息需要 Bot Token；清除 Token 前请先关闭通知"
+        if not chat:
+            errors["tg_chat"] = "启用通知或发送测试消息需要 Chat ID"
+    if errors:
+        return errors, None
     vals = {
         "tg_enabled": "1" if form.get("tg_enabled") else "0",
         "notify_on_change": "1" if form.get("notify_on_change") else "0",
         "notify_on_fail": "1" if form.get("notify_on_fail") else "0",
         "tg_token": token,
-        "tg_chat": str(form.get("tg_chat", "")).strip(),
+        "tg_chat": chat,
         "fail_cooldown_min": cd,
         "change_cooldown_min": ccd,
     }
@@ -1134,16 +1166,12 @@ async def settings_test_tg(request: Request):
     form = await request.form()
     if not _check_csrf(request, form):
         return _csrf_error(request)
-    errors, _ = _save_notify(form)
+    errors, vals = _save_notify(form, require_credentials=True)
     if errors:
         return _settings_render(request, errors=errors, error_form="notify",
                                 extra=_notify_echo(form), status_code=400)
-    # 留空表示沿用已保存的 Token；两者都没有才是配置错误
-    token = str(form.get("tg_token", "")).strip() or db.get_setting("tg_token", "")
-    chat = str(form.get("tg_chat", "")).strip()
-    if not token or not chat:
-        return _flash_redirect("/settings", err="请先填写 Bot Token 和 Chat ID 再测试")
-    ok, info = await send_tg(token, chat,
+    # 使用同一次校验并保存的有效配置，遵守清除 Token 的优先级。
+    ok, info = await send_tg(vals["tg_token"], vals["tg_chat"],
                              f"DDNS 监控测试消息\n时间: {fmt_ts(int(time.time()))}")
     if ok:
         return _flash_redirect("/settings", msg="测试消息已发送，请在 Telegram 查收")

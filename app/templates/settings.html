@@ -1,21 +1,26 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
+{% import "_forms.html" as forms %}
 {% block title %}设置 · DDNS 监控{% endblock %}
 
 {% block content %}
 <div class="page-head">
-  <div>
+  <div class="page-heading">
     <h1>设置</h1>
-    <p class="muted">通知、安全与数据保留。所有修改立即生效。</p>
+    <p class="muted">通知、安全与数据保留。保存后立即生效。</p>
   </div>
 </div>
 
 <section class="card" aria-labelledby="notify-h">
-  <h2 id="notify-h">Telegram 通知</h2>
-  {% if error_form == 'notify' and errors %}
-  <div class="alert error" role="alert">
-    <strong>通知设置未保存：</strong>
-    <ul>{% for field, message in errors.items() %}<li>{{ message }}</li>{% endfor %}</ul>
+  <div class="card-head">
+    <div>
+      <h2 id="notify-h" class="card-title"><span class="card-icon">{{ icons.icon('bell', 15) }}</span>Telegram 通知</h2>
+      <p class="muted">IP 变动、持续失败与恢复时推送消息。</p>
+    </div>
+    <span class="badge {{ 'ok' if s.tg_status == 'enabled' else ('warn' if s.tg_status == 'incomplete' else 'muted') }}">{{ '已启用' if s.tg_status == 'enabled' else ('配置不完整' if s.tg_status == 'incomplete' else '未启用') }}</span>
   </div>
+  {% if error_form == 'notify' and errors %}
+  {{ forms.error_summary('notify-errors', '通知设置未保存：', errors) }}
   {% endif %}
   <form id="notify-form" method="post" action="/settings/notify" class="form" data-pending="保存中…">
     <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
@@ -28,20 +33,23 @@
     <input id="tg_token" name="tg_token" type="password" value=""
            autocomplete="off" spellcheck="false"
            placeholder="{{ '已配置，填写可更换' if s.tg_token_set else '123456789:AA...' }}"
-           aria-describedby="tg-token-hint">
+           {% if errors.get('tg_token') %}aria-invalid="true" aria-describedby="tg-token-hint tg-token-error"{% else %}aria-describedby="tg-token-hint"{% endif %}>
+    {% if errors.get('tg_token') %}<p class="field-error" id="tg-token-error">{{ errors.tg_token }}</p>{% endif %}
     <p id="tg-token-hint" class="hint">
       {% if s.tg_token_set %}已保存 Token（出于安全考虑不回显）。留空保持不变；勾选下方选项后将清除 Token，即使同时填写了新值。{% else %}在 @BotFather 创建机器人后获得。{% endif %}
     </p>
     {% if s.tg_token_set %}
     <label class="check-row" for="clear_tg_token">
       <input type="checkbox" id="clear_tg_token" name="clear_tg_token" {% if s.clear_tg_token %}checked{% endif %}>
-      <span>清除已保存的 Token</span>
+      <span>清除已保存的 Token（需关闭通知）</span>
     </label>
     {% endif %}
 
     <label for="tg_chat">Chat ID</label>
     <input id="tg_chat" name="tg_chat" value="{{ s.tg_chat }}" inputmode="numeric"
-           autocomplete="off" placeholder="如 123456789">
+           autocomplete="off" placeholder="如 123456789"
+           {% if errors.get('tg_chat') %}aria-invalid="true" aria-describedby="tg-chat-error"{% endif %}>
+    {% if errors.get('tg_chat') %}<p class="field-error" id="tg-chat-error">{{ errors.tg_chat }}</p>{% endif %}
     <p class="hint">私聊可先给机器人发一条消息，再用 @userinfobot 查 ID；群组 ID 通常以 -100 开头。</p>
 
     <fieldset class="fieldset">
@@ -77,58 +85,71 @@
 
     <div class="form-actions">
       <button class="btn primary" type="submit">保存通知设置</button>
-      <button class="btn" type="submit" formaction="/settings/test_tg" data-pending="发送中…">发送测试消息</button>
+      <button class="btn" type="submit" formaction="/settings/test_tg" data-pending="发送中…">{{ icons.icon('send', 15) }}<span>发送测试消息</span></button>
     </div>
     <p class="hint">“发送测试消息”会先保存当前表单，再发送一条测试消息。</p>
   </form>
 </section>
 
-<section class="card" aria-labelledby="password-h">
-  <h2 id="password-h">登录密码</h2>
-  {% if error_form == 'password' and errors %}
-  <div class="alert error" role="alert">
-    <strong>密码未修改：</strong>
-    <ul>{% for field, message in errors.items() %}<li>{{ message }}</li>{% endfor %}</ul>
-  </div>
-  {% endif %}
-  <form method="post" action="/settings/password" class="form narrow" data-pending="修改中…">
-    <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
-    <label for="current_password">当前密码</label>
-    <input id="current_password" name="current_password" type="password" maxlength="1024" required
-           autocomplete="current-password"
-           {% if errors.get('current_password') %}aria-invalid="true" aria-describedby="current-password-error"{% endif %}>
-    {% if errors.get('current_password') %}<p class="field-error" id="current-password-error">{{ errors.current_password }}</p>{% endif %}
+<div class="settings-grid">
+  <section class="card" aria-labelledby="password-h">
+    <div class="card-head">
+      <div>
+        <h2 id="password-h" class="card-title"><span class="card-icon">{{ icons.icon('key-round', 15) }}</span>登录密码</h2>
+        <p class="muted">修改后所有设备都需要重新登录。</p>
+      </div>
+    </div>
+    {% if error_form == 'password' and errors %}
+    {{ forms.error_summary('password-errors', '密码未修改：', errors) }}
+    {% endif %}
+    <form method="post" action="/settings/password" class="form" data-pending="修改中…">
+      <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
+      <label for="current_password">当前密码</label>
+      <input id="current_password" name="current_password" type="password" maxlength="1024" required
+             autocomplete="current-password"
+             {% if errors.get('current_password') %}aria-invalid="true" aria-describedby="current-password-error"{% endif %}>
+      {% if errors.get('current_password') %}<p class="field-error" id="current-password-error">{{ errors.current_password }}</p>{% endif %}
 
-    <label for="password">新密码</label>
-    <input id="password" name="password" type="password" minlength="8" maxlength="1024" required
-           autocomplete="new-password"
-           {% if errors.get('password') %}aria-invalid="true" aria-describedby="password-error password-hint"{% else %}aria-describedby="password-hint"{% endif %}>
-    {% if errors.get('password') %}<p class="field-error" id="password-error">{{ errors.password }}</p>{% endif %}
-    <p id="password-hint" class="hint">8–1024 位。修改后所有设备都需要重新登录。</p>
+      <label for="password">新密码</label>
+      <input id="password" name="password" type="password" minlength="8" maxlength="1024" required
+             autocomplete="new-password"
+             {% if errors.get('password') %}aria-invalid="true" aria-describedby="password-error password-hint"{% else %}aria-describedby="password-hint"{% endif %}>
+      {% if errors.get('password') %}<p class="field-error" id="password-error">{{ errors.password }}</p>{% endif %}
+      <p id="password-hint" class="hint">8–1024 位。修改后所有设备都需要重新登录。</p>
 
-    <label for="password2">再次输入</label>
-    <input id="password2" name="password2" type="password" minlength="8" maxlength="1024" required
-           autocomplete="new-password"
-           {% if errors.get('password2') %}aria-invalid="true" aria-describedby="password2-error"{% endif %}>
-    {% if errors.get('password2') %}<p class="field-error" id="password2-error">{{ errors.password2 }}</p>{% endif %}
-    <button class="btn primary" type="submit">修改密码</button>
-  </form>
-</section>
+      <label for="password2">再次输入</label>
+      <input id="password2" name="password2" type="password" minlength="8" maxlength="1024" required
+             autocomplete="new-password"
+             {% if errors.get('password2') %}aria-invalid="true" aria-describedby="password2-error"{% endif %}>
+      {% if errors.get('password2') %}<p class="field-error" id="password2-error">{{ errors.password2 }}</p>{% endif %}
+      <div class="form-actions">
+        <button class="btn primary" type="submit">修改密码</button>
+      </div>
+    </form>
+  </section>
 
-<section class="card" aria-labelledby="data-h">
-  <h2 id="data-h">数据保留</h2>
-  {% if error_form == 'data' and errors %}
-  <div class="alert error" role="alert"><strong>未保存：</strong>{{ errors.retention_days }}</div>
-  {% endif %}
-  <form method="post" action="/settings/data" class="form narrow" data-pending="保存中…">
-    <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
-    <label for="retention_days">检查记录保留天数</label>
-    <input id="retention_days" name="retention_days" type="number" min="1" max="365"
-           value="{{ s.retention_days }}" required inputmode="numeric"
-           {% if errors.get('retention_days') %}aria-invalid="true" aria-describedby="retention-error retention-hint"{% else %}aria-describedby="retention-hint"{% endif %}>
-    {% if errors.get('retention_days') %}<p class="field-error" id="retention-error">{{ errors.retention_days }}</p>{% endif %}
-    <p id="retention-hint" class="hint">1–365 天。只清理检查记录，IP 变动记录会保留。</p>
-    <button class="btn primary" type="submit">保存数据保留设置</button>
-  </form>
-</section>
+  <section class="card" aria-labelledby="data-h">
+    <div class="card-head">
+      <div>
+        <h2 id="data-h" class="card-title"><span class="card-icon">{{ icons.icon('database', 15) }}</span>数据保留</h2>
+        <p class="muted">控制检查明细与小时汇总的生命周期。</p>
+      </div>
+    </div>
+    {% if error_form == 'data' and errors %}
+    {{ forms.error_summary('data-errors', '数据保留设置未保存：', errors) }}
+    {% endif %}
+    <form method="post" action="/settings/data" class="form" data-pending="保存中…">
+      <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
+      <label for="retention_days">检查记录保留天数</label>
+      <input id="retention_days" name="retention_days" type="number" min="1" max="365"
+             value="{{ s.retention_days }}" required inputmode="numeric"
+             {% if errors.get('retention_days') %}aria-invalid="true" aria-describedby="retention-error retention-hint"{% else %}aria-describedby="retention-hint"{% endif %}>
+      {% if errors.get('retention_days') %}<p class="field-error" id="retention-error">{{ errors.retention_days }}</p>{% endif %}
+      <p id="retention-hint" class="hint">1–365 天。只清理检查记录，IP 变动记录会保留。</p>
+      <div class="form-actions">
+        <button class="btn primary" type="submit">保存数据保留设置</button>
+      </div>
+    </form>
+  </section>
+</div>
 {% endblock %}

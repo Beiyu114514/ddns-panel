@@ -1,11 +1,15 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
+{% import "_forms.html" as forms %}
 {% block title %}{{ d.name }} · DDNS 监控{% endblock %}
 
 {% block content %}
 {% set state = 'disabled' if not d.enabled else ('pending' if not last else ('ok' if last.status == 'ok' else 'bad')) %}
 
 <nav class="breadcrumb" aria-label="面包屑">
-  <a href="/">总览</a><span aria-hidden="true">/</span><span>{{ d.name }}</span>
+  <a href="/">总览</a>
+  <span class="breadcrumb-sep" aria-hidden="true">{{ icons.icon('chevron-right', 13) }}</span>
+  <span>{{ d.name }}</span>
 </nav>
 
 <div class="page-head">
@@ -14,26 +18,26 @@
     <div class="badge-row">
       <span class="badge type">{{ d.rrtype }}</span>
       {% if d.enabled %}<span class="badge ok">监控中</span>{% else %}<span class="badge muted">已停用</span>{% endif %}
-      {% if cf_warn %}<span class="badge warn">Cloudflare 代理</span>{% endif %}
+      {% if cf_warn %}<span class="badge warn">{{ icons.icon('triangle-alert', 12) }}Cloudflare 代理</span>{% endif %}
     </div>
   </div>
-  <div class="row-actions">
+  <div class="page-actions row-actions">
     <form method="post" action="/domain/{{ d.id }}/check" class="inline" data-pending="检查中…">
       <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
-      <button class="btn primary" type="submit" {% if not d.enabled %}disabled title="监控项已停用"{% endif %}>立即检查</button>
+      <button class="btn primary" type="submit" {% if not d.enabled %}disabled title="监控项已停用"{% endif %}>{{ icons.icon('refresh-cw', 15) }}<span>立即检查</span></button>
     </form>
-    <a class="btn" href="#settings">设置</a>
+    <a class="btn" href="#settings">{{ icons.icon('settings', 15) }}<span>设置</span></a>
   </div>
 </div>
 
 <section class="card status-card" aria-labelledby="status-h">
   <h2 id="status-h" class="sr-only">当前状态</h2>
   <dl class="kv">
-    <div>
+    <div class="kv-item kv-strong">
       <dt>当前解析</dt>
       <dd class="mono strong">{{ cur|fmt_empty }}</dd>
     </div>
-    <div>
+    <div class="kv-item">
       <dt>最近检查</dt>
       <dd>
         {% if last %}
@@ -44,34 +48,34 @@
         {% endif %}
       </dd>
     </div>
-    <div>
+    <div class="kv-item">
       <dt>响应时间</dt>
       <dd class="num">{{ last.rtt_ms|fmt_rtt if last else '—' }}</dd>
     </div>
-    <div>
+    <div class="kv-item">
       <dt>当前 IP 稳定时长</dt>
       <dd>{{ stable }}</dd>
     </div>
-    <div>
+    <div class="kv-item">
       <dt>累计 IP 变动</dt>
       <dd class="num">{{ total_changes }}</dd>
     </div>
-    <div>
+    <div class="kv-item">
       <dt>记录与重置</dt>
       <dd class="small">首次记录 {{ stats.first_records }} 条{% if stats.markers %} · 基线重置 {{ stats.markers }} 次{% endif %}</dd>
     </div>
   </dl>
-  {% if last and last.error %}<p class="field-error">{{ last.error }}</p>{% endif %}
+  {% if last and last.error %}<p class="field-error" role="alert">{{ last.error }}</p>{% endif %}
   {% if cf_warn %}
-  <p class="callout warn">当前解析结果属于 Cloudflare 代理网段。监控到的是 CF 节点 IP，
-    不是源站真实 IP；若要监控源站，请在 Cloudflare 把记录改为“仅 DNS”（灰云）。</p>
+  <p class="callout warn">{{ icons.icon('info', 16) }}<span>当前解析结果属于 Cloudflare 代理网段。监控到的是 CF 节点 IP，
+    不是源站真实 IP；若要监控源站，请在 Cloudflare 把记录改为“仅 DNS”（灰云）。</span></p>
   {% endif %}
 </section>
 
 <section class="card" aria-labelledby="timeline-h">
   <div class="card-head">
     <div>
-      <h2 id="timeline-h">IP 时间线</h2>
+      <h2 id="timeline-h" class="card-title"><span class="card-icon">{{ icons.icon('clock', 15) }}</span>IP 时间线</h2>
       <p class="muted">色块表示该时间段使用的 IP；下方图例按完整记录统计时长，不受采样影响。</p>
       <p class="hint">该窗口内 {{ tl.counts.window_changes }} 次 IP 变动{% if tl.counts.markers %}，含 {{ tl.counts.markers }} 次基线重置{% endif %}。</p>
     </div>
@@ -102,7 +106,7 @@
     <span class="tl-marker" style="left: {{ tl.marker_left }}%" title="基线重置"></span>
     {% endif %}
   </div>
-  <p class="tl-range muted">{{ tl.start|fmt_ts }} → {{ tl.end|fmt_ts }}</p>
+  <p class="tl-range muted">{{ icons.icon('clock', 13) }}<span>{{ tl.start|fmt_ts }} → {{ tl.end|fmt_ts }}</span></p>
 
   {% if tl.empty %}
   <p class="empty">所选时间内还没有记录。</p>
@@ -129,10 +133,10 @@
   {% endif %}
 </section>
 
-<section class="card" id="changes" aria-labelledby="changes-h">
+<section class="card" id="changes" aria-labelledby="changes-h" tabindex="-1">
   <div class="card-head">
     <div>
-      <h2 id="changes-h">变动记录</h2>
+      <h2 id="changes-h" class="card-title"><span class="card-icon">{{ icons.icon('refresh-cw', 15) }}</span>变动记录</h2>
       <p class="muted">共 {{ stats.rows }} 行：IP 变动 {{ stats.changes }} 次、首次记录 {{ stats.first_records }} 条{% if stats.markers %}、基线重置 {{ stats.markers }} 次{% endif %}。全量历史，不受时间窗限制。</p>
     </div>
   </div>
@@ -158,11 +162,11 @@
     </table>
   </div>
   <nav class="pager" aria-label="变动记录分页">
-    {% if has_newer %}<a class="btn" href="?days={{ days }}&amp;after={{ prev_after }}">← 较新</a>
-    {% else %}<span class="btn disabled" aria-disabled="true">← 较新</span>{% endif %}
+    {% if has_newer %}<a class="btn sm" href="?days={{ days }}&amp;after={{ prev_after }}#changes">{{ icons.icon('chevron-left', 14) }}<span>较新</span></a>
+    {% else %}<span class="btn sm disabled" aria-disabled="true">{{ icons.icon('chevron-left', 14) }}<span>较新</span></span>{% endif %}
     <span class="muted">本页 {{ changes|length }} 行 · 全量历史</span>
-    {% if has_older %}<a class="btn" href="?days={{ days }}&amp;before={{ next_before }}">较旧 →</a>
-    {% else %}<span class="btn disabled" aria-disabled="true">较旧 →</span>{% endif %}
+    {% if has_older %}<a class="btn sm" href="?days={{ days }}&amp;before={{ next_before }}#changes"><span>较旧</span>{{ icons.icon('chevron-right', 14) }}</a>
+    {% else %}<span class="btn sm disabled" aria-disabled="true"><span>较旧</span>{{ icons.icon('chevron-right', 14) }}</span>{% endif %}
   </nav>
   {% else %}
   <p class="empty">还没有变动记录。首次解析成功后会写入一条“首次记录”。</p>
@@ -172,7 +176,7 @@
 <section class="card" aria-labelledby="checks-h">
   <div class="card-head">
     <div>
-      <h2 id="checks-h">最近检查</h2>
+      <h2 id="checks-h" class="card-title"><span class="card-icon">{{ icons.icon('radio', 15) }}</span>最近检查</h2>
       <p class="muted">只显示最近 20 条。</p>
     </div>
   </div>
@@ -199,20 +203,31 @@
 </section>
 
 <section class="card" id="settings" aria-labelledby="settings-h">
-  <h2 id="settings-h">监控设置</h2>
+  <div class="card-head">
+    <div>
+      <h2 id="settings-h" class="card-title"><span class="card-icon">{{ icons.icon('settings', 15) }}</span>监控设置</h2>
+      <p class="muted">调整记录类型、解析器与检查频率。</p>
+    </div>
+  </div>
+  {{ forms.error_summary('domain-errors', '监控设置未保存：', errors) }}
   <form method="post" action="/domain/{{ d.id }}/update" class="form narrow" data-pending="保存中…">
     <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
+    <input type="hidden" name="days" value="{{ days }}">
     <label for="rrtype">记录类型</label>
-    <select id="rrtype" name="rrtype">
-      <option value="A" {% if d.rrtype == 'A' %}selected{% endif %}>A（IPv4）</option>
-      <option value="AAAA" {% if d.rrtype == 'AAAA' %}selected{% endif %}>AAAA（IPv6）</option>
+    <select id="rrtype" name="rrtype" aria-describedby="rrtype-hint{% if errors.get('rrtype') %} rrtype-error{% endif %}"
+            {% if errors.get('rrtype') %}aria-invalid="true"{% endif %}>
+      <option value="A" {% if draft.rrtype == 'A' %}selected{% endif %}>A（IPv4）</option>
+      <option value="AAAA" {% if draft.rrtype == 'AAAA' %}selected{% endif %}>AAAA（IPv6）</option>
     </select>
-    <p class="hint">修改记录类型会重置基线，并把切换后的第一次解析记为新的首次记录。</p>
+    {% if errors.get('rrtype') %}<p class="field-error" id="rrtype-error">{{ errors.rrtype }}</p>{% endif %}
+    <p class="hint" id="rrtype-hint">修改记录类型会重置基线，并把切换后的第一次解析记为新的首次记录。</p>
 
     <label for="resolver">DNS 服务器</label>
-    <input id="resolver" name="resolver" value="{{ d.resolver }}" list="resolver-list"
+    <input id="resolver" name="resolver" value="{{ draft.resolver }}" list="resolver-list"
            required inputmode="text" autocomplete="off" autocapitalize="none"
-           autocorrect="off" spellcheck="false">
+           autocorrect="off" spellcheck="false"
+           {% if errors.get('resolver') %}aria-invalid="true" aria-describedby="resolver-error"{% endif %}>
+    {% if errors.get('resolver') %}<p class="field-error" id="resolver-error">{{ errors.resolver }}</p>{% endif %}
     <datalist id="resolver-list">
       {% for r in resolvers %}<option value="{{ r }}"></option>{% endfor %}
     </datalist>
@@ -220,7 +235,7 @@
     <label for="interval_sec">检查间隔</label>
     <select id="interval_sec" name="interval_sec">
       {% for sec, label in INTERVAL_OPTIONS %}
-      <option value="{{ sec }}" {% if d.interval_sec == sec %}selected{% endif %}>{{ label }}</option>
+      <option value="{{ sec }}" {% if draft.interval_sec == sec %}selected{% endif %}>{{ label }}</option>
       {% endfor %}
       {% if interval_custom %}
       <option value="{{ interval_custom }}" selected>{{ interval_custom|interval_label }}（当前）</option>
@@ -228,26 +243,34 @@
     </select>
 
     <label for="note">备注（可选）</label>
-    <input id="note" name="note" value="{{ d.note or '' }}" maxlength="200" placeholder="如：家里宽带 IPv4">
+    <input id="note" name="note" value="{{ draft.note or '' }}" maxlength="200" placeholder="如：家里宽带 IPv4">
 
     <label class="check-row" for="enabled">
-      <input type="checkbox" id="enabled" name="enabled" {% if d.enabled %}checked{% endif %}>
+      <input type="checkbox" id="enabled" name="enabled" {% if draft.enabled %}checked{% endif %}>
       <span>启用定时监控</span>
     </label>
 
-    <button class="btn primary" type="submit">保存监控设置</button>
+    <div class="form-actions">
+      <button class="btn primary" type="submit">保存监控设置</button>
+    </div>
   </form>
 </section>
 
 <section class="card danger-zone" aria-labelledby="danger-h">
-  <h2 id="danger-h">危险操作</h2>
-  <p>删除后会永久移除该监控项、{{ stats.rows }} 条变动记录与全部检查记录，无法恢复。</p>
+  <div class="card-head">
+    <div>
+      <h2 id="danger-h" class="card-title"><span class="card-icon danger">{{ icons.icon('trash-2', 15) }}</span>危险操作</h2>
+      <p>删除后会永久移除该监控项、{{ stats.rows }} 条变动记录与全部检查记录，无法恢复。</p>
+    </div>
+  </div>
   <details>
     <summary>删除监控项…</summary>
     <form method="post" action="/domain/{{ d.id }}/delete" class="form" data-pending="删除中…">
       <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
       <p>确认删除 <strong>{{ d.name }}</strong>？此操作不可撤销。</p>
-      <button class="btn danger-solid" type="submit">确认删除</button>
+      <div class="form-actions">
+        <button class="btn danger-solid" type="submit">{{ icons.icon('trash-2', 15) }}<span>确认删除</span></button>
+      </div>
     </form>
   </details>
 </section>

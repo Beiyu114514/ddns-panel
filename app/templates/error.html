@@ -1,7 +1,9 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}请求被拒绝 · DDNS 监控{% endblock %}
 {% block content %}
-<section class="card">
+<section class="card error-page">
+  <span class="empty-icon danger">{{ icons.icon('triangle-alert', 24) }}</span>
   <h1>请求被拒绝</h1>
   <p role="alert">表单安全令牌无效或已丢失，请刷新页面后重试。</p>
   <a class="btn" href="/">返回总览</a>

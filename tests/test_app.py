@@ -216,12 +216,13 @@ def test_saved_telegram_token_can_be_cleared(auth_client, new_token):
     assert "清除已保存的 Token" in html
     resp = auth_client.post("/settings/notify", data={
         "_csrf": auth_client.cookies.get("ddns_csrf"),
-        "tg_enabled": "on", "tg_token": new_token, "clear_tg_token": "on",
+        "tg_token": new_token, "clear_tg_token": "on",
         "tg_chat": "12345", "fail_cooldown_min": "60",
         "change_cooldown_min": "0",
     }, follow_redirects=False)
     assert resp.status_code == 303
     assert db.get_setting("tg_token") == ""
+    assert db.get_setting("tg_enabled") == "0"
     assert 'name="clear_tg_token"' not in auth_client.get("/settings").text
 
 

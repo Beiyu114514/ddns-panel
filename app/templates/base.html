@@ -3,45 +3,93 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f8fa">
-<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d1117">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafafa">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#09090b">
 <link rel="icon" href="data:,">
 <title>{% block title %}DDNS 监控{% endblock %}</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+{% import "_icons.html" as icons %}
 <a class="skip-link" href="#main">跳到主要内容</a>
 
 {% macro navlinks(req) -%}
-<a href="/" {% if req.url.path == '/' %}aria-current="page"{% endif %}>总览</a>
-<a href="/domain/new" {% if req.url.path == '/domain/new' %}aria-current="page"{% endif %}>添加监控项</a>
-<a href="/settings" {% if req.url.path == '/settings' %}aria-current="page"{% endif %}>设置</a>
-<form method="post" action="/logout" class="inline" data-pending="退出中…">
-  <input type="hidden" name="_csrf" value="{{ request.state.csrf }}">
-  <button type="submit" class="link">退出</button></form>
+<p class="nav-label">监控</p>
+<a class="nav-item" href="/" {% if req.url.path == '/' or (req.url.path.startswith('/domain/') and req.url.path != '/domain/new') %}aria-current="page"{% endif %}>
+  {{ icons.icon('layout-dashboard', 17) }}<span>总览</span>
+</a>
+<a class="nav-item" href="/domain/new" {% if req.url.path == '/domain/new' %}aria-current="page"{% endif %}>
+  {{ icons.icon('plus', 17) }}<span>添加监控项</span>
+</a>
+<p class="nav-label">系统</p>
+<a class="nav-item" href="/settings" {% if req.url.path == '/settings' or req.url.path.startswith('/settings/') %}aria-current="page"{% endif %}>
+  {{ icons.icon('settings', 17) }}<span>设置</span>
+</a>
 {%- endmacro %}
 
+{% macro logout_form(req) -%}
+<form method="post" action="/logout" class="inline nav-exit" data-pending="退出中…">
+  <input type="hidden" name="_csrf" value="{{ req.state.csrf }}">
+  <button type="submit" class="nav-item">{{ icons.icon('log-out', 17) }}<span>退出登录</span></button>
+</form>
+{%- endmacro %}
+
+<div class="app-shell{% if hide_nav %} app-shell-plain{% endif %}">
 {% if not hide_nav %}
-<header class="topbar">
-  <nav class="wrap topnav" aria-label="主导航">
-    <a class="brand" href="/">DDNS 监控</a>
-    <div class="nav-desktop links">{{ navlinks(request) }}</div>
-    <details class="nav-mobile">
-      <summary class="nav-toggle">菜单</summary>
-      <div class="links nav-drawer">{{ navlinks(request) }}</div>
-    </details>
-  </nav>
-</header>
+  <aside class="sidebar" aria-label="侧边栏">
+    <div class="sidebar-head">
+      <a class="brand" href="/">
+        <span class="brand-mark">{{ icons.icon('activity', 18) }}</span>
+        <span class="brand-copy"><strong>DDNS 监控</strong><span>DNS 解析观测</span></span>
+      </a>
+    </div>
+
+    <nav class="sidebar-nav" aria-label="主导航">
+      {{ navlinks(request) }}
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="instance-card">
+        <span class="instance-dot" aria-hidden="true"></span>
+        <div><strong>本地部署</strong><span>SQLite · 单管理员</span></div>
+      </div>
+      <p class="theme-note"><span class="theme-sun">{{ icons.icon('sun', 14) }}</span><span class="theme-moon">{{ icons.icon('moon', 14) }}</span><span>外观跟随系统</span></p>
+      {{ logout_form(request) }}
+    </div>
+  </aside>
+
+  <div class="app-main">
+  <header class="topbar">
+    <nav class="topnav" aria-label="移动导航">
+      <a class="brand" href="/">
+        <span class="brand-mark">{{ icons.icon('activity', 18) }}</span>
+        <span class="brand-copy"><strong>DDNS 监控</strong></span>
+      </a>
+      <details class="nav-mobile">
+        <summary class="nav-toggle" aria-label="菜单">{{ icons.icon('menu', 18) }}<span>菜单</span></summary>
+        <div class="links nav-drawer">
+          {{ navlinks(request) }}
+          <div class="nav-drawer-foot">{{ logout_form(request) }}</div>
+        </div>
+      </details>
+    </nav>
+  </header>
+{% else %}
+  <div class="app-main">
 {% endif %}
 
-<main id="main" class="wrap{% if hide_nav %} login-main{% endif %}" tabindex="-1">
-  {% set f = request.state.flash %}
-  {% if f %}
-    {% if f.get('msg') %}<div class="flash ok" role="status">{{ f.get('msg') }}</div>{% endif %}
-    {% if f.get('err') %}<div class="flash bad" role="alert">{{ f.get('err') }}</div>{% endif %}
-  {% endif %}
-  {% block content %}{% endblock %}
-</main>
+  <main id="main" class="wrap{% if hide_nav %} login-main{% endif %}" tabindex="-1">
+    <div class="flash-stack">
+      {% set f = request.state.flash %}
+      {% if f %}
+        {% if f.get('msg') %}<div class="flash ok" role="status">{{ f.get('msg') }}</div>{% endif %}
+        {% if f.get('err') %}<div class="flash bad" role="alert">{{ f.get('err') }}</div>{% endif %}
+      {% endif %}
+    </div>
+    {% block content %}{% endblock %}
+  </main>
+  </div>
+</div>
 <script src="/static/app.js" defer></script>
 {% block scripts %}{% endblock %}
 </body>

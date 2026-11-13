@@ -1,25 +1,40 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}登录 · DDNS 监控{% endblock %}
 {% block content %}
 <div class="login-wrap">
+  <div class="login-brand">
+    <span class="brand-mark large">{{ icons.icon('activity', 22) }}</span>
+    <div><strong>DDNS 监控</strong><span>DNS 解析观测</span></div>
+  </div>
+
   <div class="card login-card">
-    <h1>登录 DDNS 监控</h1>
-    <p class="muted login-host">当前节点：<strong>{{ request.url.hostname }}</strong></p>
+    <div class="login-head">
+      <span class="login-icon">{{ icons.icon('shield-check', 20) }}</span>
+      <h1>登录 DDNS 监控</h1>
+      <p class="muted login-host">当前节点：<strong>{{ request.url.hostname }}</strong></p>
+    </div>
+
     {% if not cookie_secure %}
-    <div class="flash bad" role="alert"><strong>HTTP 明文登录模式已开启</strong>：仅限内网调试，
-      通过 HTTP 访问时密码和会话可能被窃取。</div>
+    <div class="alert error" role="alert">{{ icons.icon('triangle-alert', 16) }}<span><strong>HTTP 明文登录模式已开启</strong>：仅限内网调试，
+      通过 HTTP 访问时密码和会话可能被窃取。</span></div>
     {% endif %}
-    {% if error %}<div class="flash bad" id="login-error" role="alert">{{ error }}</div>{% endif %}
+    {% if error %}<div class="alert error" id="login-error" role="alert">{{ icons.icon('triangle-alert', 16) }}<span>{{ error }}</span></div>{% endif %}
+
     <form method="post" action="/login" class="form" data-pending="登录中…">
       <label for="password">密码</label>
       <input id="password" type="password" name="password" maxlength="1024" required
              autocomplete="current-password" autocapitalize="off"
              autocorrect="off" spellcheck="false"
              {% if error %}aria-invalid="true" aria-describedby="login-error"{% endif %}>
-      <button class="btn primary wide" type="submit">登录</button>
+      <div class="form-actions">
+        <button class="btn primary wide" type="submit">{{ icons.icon('log-in', 15) }}<span>登录</span></button>
+      </div>
     </form>
-    <p class="hint">首次部署的初始密码保存在服务器的数据目录（默认 <code>data/initial_password.txt</code>）；
+    <p class="hint login-hint">首次部署的初始密码保存在服务器的数据目录（默认 <code>data/initial_password.txt</code>）；
       修改密码后该文件会被删除。</p>
   </div>
+
+  <p class="login-note">{{ icons.icon('shield-check', 14) }}<span>单管理员访问 · 会话 Cookie 受保护</span></p>
 </div>
 {% endblock %}

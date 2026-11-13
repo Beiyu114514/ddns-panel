@@ -136,6 +136,12 @@ docker compose up -d ddns-monitor
 
 重新登录后立即修改密码。本地进程部署同样先停服务、备份，再在虚拟环境下运行上述 Python 代码；必须使用服务相同的 `DDNS_DATA_DIR` 和文件属主。不要在应用运行中单独删除 `password_hash`，也不要只重置 hash 却保留旧 `auth_secret`。
 
+## 表单与通知设置
+
+DNS 服务器必须填写有效的 IPv4 或 IPv6 地址；校验失败会保留输入并显示字段错误。监控项切换记录类型发生冲突时，也会保留备注、间隔等编辑草稿。
+
+启用 Telegram 通知和发送测试消息都需要有效配置中的 Bot Token 与 Chat ID。Token 留空沿用已保存值；清除 Token 需先关闭通知，清除选项优先于同时填写的新 Token。关闭通知时允许保存不完整草稿。“发送测试消息”会先校验并保存表单，再使用同一份配置发送。状态徽标反映已保存配置，“已启用”表示开关开启且凭据齐全，发送结果以测试消息为准。
+
 ## 浏览器安全
 
 所有响应（包括静态资源、重定向和错误）带 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Permissions-Policy: geolocation=(), microphone=(), camera=()` 与以下 CSP：
@@ -182,10 +188,14 @@ DDNS_BENCH_DIR=$(mktemp -d /tmp/ddns-bench-XXXXXX)
 视觉门禁需要 Node.js（支持内置 fetch）、Playwright 模块及能在本机启动的 Chromium（含所需系统库），依赖齐备后运行：
 
 ```bash
-PYTHON=.venv/bin/python \
-PLAYWRIGHT_MODULE=/absolute/path/to/node_modules/playwright \
-CHROME_BIN=/absolute/path/to/chromium \
+export PYTHON=.venv/bin/python
+export PLAYWRIGHT_MODULE=/absolute/path/to/node_modules/playwright
+export CHROME_BIN=/absolute/path/to/chromium
 node scripts/visual.mjs
+# 使用相同环境变量，运行原生表单提交、错误定位、分页和触屏时间线回归：
+node scripts/check_interactions.mjs
 ```
 
 也可通过 `NODE_PATH` 提供 Playwright；特殊浏览器依赖通过 `LD_LIBRARY_PATH` 指定。脚本自行创建临时数据并启动服务，检查明暗主题 × 320/390/768/1024/1440px，截图保存到 `artifacts/ui/`；浏览器不可用时退出码为 2。默认 CI 不安装浏览器、不运行视觉门禁，需在具备这些前置条件的环境另行执行。
+
+交互回归脚本同样自行创建和清理临时数据库及本机服务，DNS 与 Telegram 使用模拟实现。它包含一次 31 秒慢请求检查；结果与截图写入 `artifacts/ui-interactions/`。
